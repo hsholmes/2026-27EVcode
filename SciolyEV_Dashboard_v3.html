@@ -1,0 +1,1862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SciolyEV Telemetry &amp; Motion Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #0f1013;
+    --bg-surface: #16181d;
+    --bg-card: #1c1e24;
+    --bg-elevated: #23262e;
+    --bg-input: #121316;
+    --border-subtle: #272a33;
+    --border-medium: #333844;
+    --border-focus: #555e70;
+    
+    --text-main: #f0f2f5;
+    --text-muted: #8b92a0;
+    --text-dim: #5c6270;
+    
+    --accent: #d8dde6;
+    --accent-blue: #60a5fa;
+    --status-idle: #8b92a0;
+    --status-ready: #4ade80;
+    --status-run: #60a5fa;
+    --status-warn: #fbbf24;
+    --status-danger: #f87171;
+    
+    --radius: 2px;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+    min-height: 100vh;
+    padding: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .container {
+    max-width: 1440px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .navbar {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .nav-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--text-main);
+  }
+
+  .nav-badge {
+    background: var(--bg-card);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius);
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+  }
+
+  .nav-center {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .battery-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    padding: 4px 10px;
+    border-radius: var(--radius);
+  }
+
+  .bat-bar-track {
+    width: 38px;
+    height: 12px;
+    border: 1px solid var(--border-medium);
+    padding: 1px;
+    position: relative;
+    border-radius: 1px;
+    display: flex;
+    align-items: center;
+  }
+  .bat-bar-track::after {
+    content: '';
+    position: absolute;
+    right: -3px;
+    top: 3px;
+    width: 2px;
+    height: 4px;
+    background: var(--border-medium);
+  }
+
+  .bat-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--status-ready);
+    transition: width 0.3s, background-color 0.3s;
+  }
+
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-dim);
+  }
+  .status-dot.connected { background: var(--status-ready); }
+  .status-dot.connecting { background: var(--status-warn); animation: pulse 1s infinite; }
+
+  @keyframes pulse { 0% { opacity: 0.2; } 50% { opacity: 1; } 100% { opacity: 0.2; } }
+
+  button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 7px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    border: 1px solid var(--border-medium);
+    background: var(--bg-card);
+    color: var(--text-main);
+  }
+
+  button:hover:not(:disabled) {
+    background: var(--bg-elevated);
+    border-color: var(--border-focus);
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .btn-connect {
+    border-color: #3b4252;
+    color: #e5e9f0;
+  }
+  .btn-connect.connected {
+    border-color: var(--border-medium);
+    color: var(--text-muted);
+  }
+
+  /* Command Banner */
+  .action-bar {
+    display: grid;
+    grid-template-columns: 1.4fr 1.3fr 1.4fr 1.5fr 1fr;
+    gap: 10px;
+  }
+
+  .btn-reset {
+    background: #1a1e26;
+    border-color: #3e4757;
+    color: #f3f4f6;
+    font-size: 13px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 700;
+  }
+  .btn-reset:hover:not(:disabled) {
+    background: #232936;
+    border-color: #5c687e;
+    color: #ffffff;
+  }
+
+  .btn-arm {
+    background: #1e1b24;
+    border-color: #4a3e63;
+    color: #c4b5fd;
+    font-size: 13px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 700;
+    transition: all 0.15s ease;
+  }
+  .btn-arm:hover:not(:disabled) {
+    background: #2b2538;
+    border-color: #6d5b91;
+    color: #ede9fe;
+  }
+  .btn-arm.disarmed {
+    background: #271a12;
+    border-color: #6b401e;
+    color: #f59e0b;
+  }
+
+  .btn-cal-modal {
+    background: #141c24;
+    border-color: #233e54;
+    color: #38bdf8;
+    font-size: 13px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 700;
+  }
+  .btn-cal-modal:hover:not(:disabled) {
+    background: #1c2936;
+    border-color: #325a7a;
+    color: #7dd3fc;
+  }
+
+  .btn-start {
+    background: #142019;
+    border-color: #244630;
+    color: #4ade80;
+    font-size: 13px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 700;
+  }
+  .btn-start:hover:not(:disabled) {
+    background: #1c3024;
+    border-color: #346844;
+  }
+
+  .btn-stop {
+    background: #261618;
+    border-color: #4a2529;
+    color: #f87171;
+    font-size: 13px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-weight: 700;
+  }
+  .btn-stop:hover:not(:disabled) {
+    background: #381c20;
+    border-color: #6b353b;
+  }
+
+  /* Modal Backdrop & Card */
+  .modal-backdrop {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(10, 12, 16, 0.85);
+    backdrop-filter: blur(5px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-card {
+    background: #16181d;
+    border: 1px solid #2e3440;
+    border-radius: var(--radius);
+    width: 92%;
+    max-width: 500px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+  }
+  .modal-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .modal-body {
+    padding: 18px;
+  }
+
+  /* Grid */
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: 400px 1fr;
+    gap: 12px;
+  }
+
+  .card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: 8px;
+  }
+
+  .card-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .card-subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .telemetry-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .metric-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .metric-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  .metric-val-wrap {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+
+  .metric-val {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1;
+  }
+
+  .metric-val.large {
+    font-size: 30px;
+  }
+
+  .metric-unit {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .phase-display {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  /* Gyro & Heading */
+  .gyro-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .compass-ring {
+    width: 60px;
+    height: 60px;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .compass-needle {
+    width: 100%;
+    height: 100%;
+    transform-origin: 30px 30px;
+    transition: transform 0.15s ease-out;
+  }
+
+  .gyro-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .gyro-heading-num {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-main);
+    line-height: 1;
+  }
+
+  .gyro-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Progress Bar */
+  .progress-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+  }
+
+  .progress-track {
+    height: 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: 1px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.15s ease-out;
+  }
+
+  .progress-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* AS5600 Encoder Ticks Boxes */
+  .motor-speed-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .motor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+
+  .motor-id {
+    width: 60px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .motor-bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+  }
+
+  .motor-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: #6b7280;
+    transition: width 0.1s ease;
+  }
+
+  .motor-steps-num {
+    width: 70px;
+    text-align: right;
+    color: var(--text-main);
+  }
+
+  /* Chart */
+  .chart-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .chart-canvas-wrap {
+    width: 100%;
+    height: 180px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    position: relative;
+  }
+
+  canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend-indicator {
+    width: 8px;
+    height: 2px;
+  }
+
+  /* Forms & Tuning */
+  .param-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+  }
+
+  .param-field {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .param-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .param-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .param-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .input-row {
+    display: flex;
+    gap: 6px;
+  }
+
+  input[type="number"], input[type="text"] {
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    padding: 6px 8px;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.12s;
+  }
+
+  input[type="number"]:focus, input[type="text"]:focus {
+    border-color: var(--border-focus);
+  }
+
+  .btn-send-mini {
+    padding: 6px 10px;
+    font-size: 10px;
+    border-color: var(--border-subtle);
+    background: var(--bg-elevated);
+    white-space: nowrap;
+  }
+
+  .preset-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+  }
+
+  .preset-btn {
+    padding: 5px 9px;
+    font-size: 10px;
+    background: var(--bg-surface);
+  }
+
+  .cal-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .cal-banner {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .cal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .log-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .log-view {
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    height: 120px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .log-line {
+    display: block;
+    word-break: break-all;
+  }
+  .log-line.info { color: #81a1c1; }
+  .log-line.rx   { color: #949ba8; }
+  .log-line.tx   { color: #d8dde6; }
+  .log-line.ok   { color: var(--status-ready); }
+  .log-line.warn { color: var(--status-warn); }
+  .log-line.err  { color: var(--status-danger); }
+
+  @media (max-width: 960px) {
+    .dashboard-grid { grid-template-columns: 1fr; }
+    .action-bar { grid-template-columns: 1fr; }
+    .cal-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- 1. Top Navbar: Title, Battery, Bluetooth Status -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <span class="nav-title mono">SCIOLY // EV-01</span>
+      <span class="nav-badge mono">AS5600 &amp; MPU-6050 TELEMETRY</span>
+    </div>
+
+    <div class="nav-center">
+      <div class="battery-wrap">
+        <span class="metric-label">BATT</span>
+        <div class="bat-bar-track">
+          <div class="bat-bar-fill" id="batFill"></div>
+        </div>
+        <span class="mono" id="batText" style="font-size:12px;font-weight:600;">--.- V</span>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <div class="status-pill mono" id="statusPill">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusLabel">DISCONNECTED</span>
+      </div>
+      <button class="btn-connect" id="btnConnect" onclick="toggleConnect()">CONNECT</button>
+    </div>
+  </header>
+
+  <!-- 2. Action Bar: Reset, Arm/Disarm, Push Calibrate, Start, Stop -->
+  <div class="action-bar">
+    <button class="btn-reset" id="btnReset" onclick="resetVehicle()" disabled>
+      ↺ RESET &amp; ARM
+    </button>
+    <button class="btn-arm mono" id="btnArmToggle" onclick="toggleMotorArm()" disabled>
+      🔓 DISARM MOTORS
+    </button>
+    <button class="btn-cal-modal mono" id="btnOpenPushCal" onclick="openPushCalModal()" disabled>
+      📏 PUSH CALIBRATE
+    </button>
+    <button class="btn-start" id="btnStart" onclick="startVehicle()" disabled>
+      ▶ START RUN
+    </button>
+    <button class="btn-stop" id="btnStop" onclick="emergencyStop()" disabled>
+      ⏹ STOP
+    </button>
+  </div>
+
+  <!-- 3. Main Dashboard: Left (Telemetry), Right (Tuning) -->
+  <div class="dashboard-grid">
+
+    <!-- LEFT: Realtime Telemetry Display -->
+    <div style="display:flex;flex-direction:column;gap:12px;">
+
+      <!-- Status & Distance Progress Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Live Encoder Telemetry</span>
+          <span class="phase-display mono" id="phaseBadge">IDLE</span>
+        </div>
+
+        <div class="telemetry-row">
+          <div class="metric-box">
+            <span class="metric-label">AS5600 Position</span>
+            <div class="metric-val-wrap">
+              <span class="metric-val large mono" id="dispDistNow">0.000</span>
+              <span class="metric-unit mono">m</span>
+            </div>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Target Distance</span>
+            <div class="metric-val-wrap">
+              <span class="metric-val large mono" id="dispDistTarget">1.000</span>
+              <span class="metric-unit mono">m</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Linear Progress Bar -->
+        <div class="progress-panel">
+          <div class="progress-header mono">
+            <span>RUN PROGRESS</span>
+            <span id="dispProgressPct">0.0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <div class="progress-stats mono">
+            <span id="dispDistFeet">0.00 ft</span>
+            <span id="dispRemaining">Remaining: 1.000 m</span>
+          </div>
+        </div>
+
+        <!-- Gyro & Heading Display -->
+        <div class="gyro-box">
+          <div class="compass-ring">
+            <svg viewBox="0 0 60 60" style="width:100%;height:100%;">
+              <circle cx="30" cy="30" r="28" fill="none" stroke="#2b2e38" stroke-width="1.5"/>
+              <line x1="30" y1="3" x2="30" y2="8" stroke="#60a5fa" stroke-width="1.5"/>
+              <text x="30" y="16" text-anchor="middle" fill="#60a5fa" font-family="JetBrains Mono" font-size="6">0°</text>
+              <g id="compassNeedle" class="compass-needle">
+                <polygon points="30,8 33,30 30,27 27,30" fill="#4ade80"/>
+                <polygon points="30,52 33,30 30,33 27,30" fill="#f87171" opacity="0.6"/>
+                <circle cx="30" cy="30" r="2.5" fill="#f0f2f5"/>
+              </g>
+            </svg>
+          </div>
+          <div class="gyro-info mono">
+            <div class="metric-label">MPU-6050 Gyroscope</div>
+            <div class="gyro-heading-num" id="dispHeading">0.0°</div>
+            <div class="gyro-sub">Rate: <span id="dispGyroRate">0.0</span> °/s — <span id="dispHeadingStatus">ON TRACK</span></div>
+          </div>
+        </div>
+
+        <!-- Velocity & Run Time -->
+        <div class="telemetry-row">
+          <div class="metric-box">
+            <span class="metric-label">Velocity</span>
+            <div class="metric-val-wrap">
+              <span class="metric-val mono" id="dispSpeed">0.00</span>
+              <span class="metric-unit mono">m/s</span>
+            </div>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">Run Elapsed</span>
+            <div class="metric-val-wrap">
+              <span class="metric-val mono" id="dispElapsed">0.00</span>
+              <span class="metric-unit mono">s</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Left/Right AS5600 Encoder Ticks -->
+        <div class="motor-speed-box">
+          <div class="metric-label">AS5600 Wheel Odometry (Ticks)</div>
+          <div class="motor-row mono">
+            <span class="motor-id">Left Enc:</span>
+            <div class="motor-bar-track">
+              <div class="motor-bar-fill" id="motorFillA"></div>
+            </div>
+            <span class="motor-steps-num" id="motorStepsA">0</span>
+          </div>
+          <div class="motor-row mono">
+            <span class="motor-id">Right Enc:</span>
+            <div class="motor-bar-track">
+              <div class="motor-bar-fill" id="motorFillB"></div>
+            </div>
+            <span class="motor-steps-num" id="motorStepsB">0</span>
+          </div>
+
+          <!-- Live Closed-Loop Motor Balance Compensation -->
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;" class="mono">
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;">LIVE MOTOR COMPENSATION</span>
+              <div style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:600;">
+                <span id="compLeftVal" style="color:var(--accent-blue);">L: 1.000x</span>
+                <span style="color:var(--border);">/</span>
+                <span id="compRightVal" style="color:var(--accent-cyan);">R: 1.000x</span>
+              </div>
+            </div>
+            <span id="compDeltaBadge" class="nav-badge" style="font-size:10px;padding:3px 8px;border:1px solid var(--border-subtle);">Δ 0 ticks</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Realtime Strip Chart -->
+      <div class="card chart-card">
+        <div class="card-header">
+          <span class="card-title">Realtime Motion Profile</span>
+          <div class="chart-legend mono">
+            <div class="legend-item">
+              <div class="legend-indicator" style="background:#e2e8f0;"></div>
+              <span>Distance (m)</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-indicator" style="background:#60a5fa;"></div>
+              <span>Speed (m/s)</span>
+            </div>
+            <div class="legend-item">
+              <div class="legend-indicator" style="background:#4ade80;"></div>
+              <span>Heading (°)</span>
+            </div>
+          </div>
+        </div>
+        <div class="chart-canvas-wrap">
+          <canvas id="telemetryCanvas"></canvas>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: Parameters, Calibration, Log -->
+    <div style="display:flex;flex-direction:column;gap:12px;">
+
+      <!-- Distance Presets Bar -->
+      <div class="preset-bar">
+        <span class="metric-label" style="margin-right:4px;">DISTANCE PRESETS:</span>
+        <button class="preset-btn mono" onclick="setPresetDist(1.00)">1.00m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(5.00)">5.00m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(7.00)">7.00m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(8.00)">8.00m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(8.50)">8.50m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(9.00)">9.00m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(9.50)">9.50m</button>
+        <button class="preset-btn mono" onclick="setPresetDist(10.00)">10.00m</button>
+      </div>
+
+      <!-- Run Target Parameters -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Run Target Parameters</span>
+          <button class="btn-send-mini mono" id="btnSendAll" onclick="sendAllParameters()" disabled>
+            ↑ SYNC ALL TO VEHICLE
+          </button>
+        </div>
+
+        <div class="param-grid">
+
+          <!-- Forward Distance -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Forward Distance</span>
+              <span class="param-sub">Meters</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpFwdDist" value="1.000" step="0.050" min="0.1" max="25.0" oninput="updateEstimates()">
+              <button class="btn-send-mini mono" id="btnFwdDist" onclick="sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Forward Time -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Forward Time</span>
+              <span class="param-sub">Seconds</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpFwdTime" value="10.0" step="0.5" min="1.0" max="60.0" oninput="updateEstimates()">
+              <button class="btn-send-mini mono" id="btnFwdTime" onclick="sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- KP Heading -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">KP Heading</span>
+              <span class="param-sub">Gyro Correction</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpKp" value="12.0" step="0.5" min="0" max="50">
+              <button class="btn-send-mini mono" id="btnKp" onclick="sendParam('KP', 'inpKp', 'btnKp')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Forward Steering Bias -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Forward Bias</span>
+              <span class="param-sub">% (-L / +R)</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpFwdBias" value="10.0" step="1.0" min="-50" max="50">
+              <button class="btn-send-mini mono" id="btnFwdBias" onclick="sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Reverse Distance -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Reverse Distance</span>
+              <span class="param-sub">Meters</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpRevDist" value="1.000" step="0.050" min="0.0" max="25.0" oninput="updateEstimates()">
+              <button class="btn-send-mini mono" id="btnRevDist" onclick="sendParam('DIST_R', 'inpRevDist', 'btnRevDist')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Reverse Time -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Reverse Time</span>
+              <span class="param-sub">Seconds</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpRevTime" value="10.0" step="0.5" min="1.0" max="60.0" oninput="updateEstimates()">
+              <button class="btn-send-mini mono" id="btnRevTime" onclick="sendParam('TIME_R', 'inpRevTime', 'btnRevTime')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Reverse Steering Bias -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Reverse Bias</span>
+              <span class="param-sub">% (-L / +R)</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpRevBias" value="10.0" step="1.0" min="-50" max="50">
+              <button class="btn-send-mini mono" id="btnRevBias" onclick="sendParam('BIAS_R', 'inpRevBias', 'btnRevBias')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Pause Between Legs -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Pause Between Legs</span>
+              <span class="param-sub">Milliseconds</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpPause" value="500" step="50" min="0" max="5000">
+              <button class="btn-send-mini mono" id="btnPause" onclick="sendParam('PAUSE', 'inpPause', 'btnPause')" disabled>SEND</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Encoder Calibration & Odometry Tuning -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">AS5600 Encoder Calibration</span>
+          <span class="card-subtitle mono" id="lblCurrentCal">Current: 17113 ticks/m</span>
+        </div>
+
+        <div class="cal-card">
+          <div class="cal-banner">
+            Calibrate AS5600 ticks per meter (4096 ticks/rev on 76.2mm wheel = 17,113 ticks/m). Flashes amber on ESP32 RGB pixel and saves permanently to vehicle NVS.
+          </div>
+
+          <div class="cal-grid">
+            <div class="param-field">
+              <div class="param-label-row">
+                <span class="param-title">Direct Calibration Factor</span>
+                <span class="param-sub">Ticks / Meter</span>
+              </div>
+              <div class="input-row">
+                <input type="number" id="inpCalSteps" value="17113.0" step="1.0" min="1000" max="100000" oninput="updateEstimates()">
+                <button class="btn-send-mini mono" id="btnCalSteps" onclick="sendCalibrationDirect()" disabled>SAVE</button>
+              </div>
+            </div>
+
+            <div class="param-field">
+              <div class="param-label-row">
+                <span class="param-title">Tape Measure Auto-Calibration</span>
+                <span class="param-sub">Measured Distance (m)</span>
+              </div>
+              <div class="input-row">
+                <input type="number" id="inpMeasuredDist" placeholder="e.g. 0.985" step="0.001">
+                <button class="btn-send-mini mono" id="btnAutoCal" onclick="sendAutoCalibration()" disabled>COMPUTE</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry Event Log -->
+      <div class="card log-card">
+        <div class="card-header">
+          <span class="card-title">System &amp; BLE Telemetry Log</span>
+          <div style="display:flex;gap:6px;">
+            <button class="btn-send-mini mono" onclick="clearLog()">CLEAR</button>
+            <button class="btn-send-mini mono" onclick="exportLogCsv()">EXPORT CSV</button>
+          </div>
+        </div>
+        <div class="log-view" id="logConsole"></div>
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Push-Roll Calibration Modal -->
+<div class="modal-backdrop" id="calModal" style="display:none;">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:16px;">📏</span>
+        <span class="card-title">Physical Push-Roll Calibration</span>
+      </div>
+      <button class="btn-send-mini mono" onclick="closePushCalModal()">✕ CLOSE</button>
+    </div>
+
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--text-muted);line-height:1.5;margin-bottom:14px;">
+        Set up a tape measure on the floor. Enter your rollout distance below. Click <b>BEGIN</b> to disarm motors and zero encoders, manually push the vehicle to the tape line, then click <b>FINISH &amp; SAVE</b>.
+      </p>
+
+      <div class="param-field" style="margin-bottom:14px;">
+        <div class="param-label-row">
+          <span class="param-title">Target Roll-Out Distance</span>
+          <span class="param-sub">Meters</span>
+        </div>
+        <div class="input-row">
+          <input type="number" id="inpPushTargetM" value="1.000" step="0.050" min="0.1" max="10.0" style="font-size:14px;padding:8px;">
+        </div>
+      </div>
+
+      <div style="background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:14px;margin-bottom:16px;">
+        <div class="metric-label" style="margin-bottom:8px;">LIVE PUSH ODOMETRY ACCUMULATOR</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-family:var(--font-mono);font-size:13px;">
+          <div>Left Ticks: <span id="calLiveLeftTicks" style="color:var(--accent-blue);font-weight:700;">0</span></div>
+          <div>Right Ticks: <span id="calLiveRightTicks" style="color:var(--accent-cyan);font-weight:700;">0</span></div>
+        </div>
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-subtle);font-family:var(--font-mono);font-size:12px;color:var(--text-muted);display:flex;justify-content:space-between;">
+          <span>Avg: <b id="calLiveAvgTicks" style="color:var(--text-main);">0</b> ticks</span>
+          <span>Calculated: <b id="calLiveFactor" style="color:var(--status-ready);">0.00</b> ticks/m</span>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;">
+        <button class="btn-cal-step mono" id="btnPushStart" onclick="startPushCalibration()" style="flex:1;background:#201c14;border:1px solid #634a1a;color:#f59e0b;padding:12px;font-weight:700;border-radius:var(--radius);cursor:pointer;">
+          1. BEGIN (DISARM &amp; ZERO)
+        </button>
+        <button class="btn-cal-step mono" id="btnPushFinish" onclick="finishPushCalibration()" disabled style="flex:1;background:#142019;border:1px solid #244630;color:#4ade80;padding:12px;font-weight:700;border-radius:var(--radius);cursor:pointer;">
+          2. FINISH &amp; SAVE TO NVS
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const SERVICE_UUID = '19b10000-e8f2-537e-4f6c-d104768a1214';
+const STATUS_CHAR  = '19b10001-e8f2-537e-4f6c-d104768a1214';
+const CMD_CHAR     = '19b10002-e8f2-537e-4f6c-d104768a1214';
+
+let bleDevice   = null;
+let cmdChar     = null;
+let isConnected = false;
+
+let currentCalibration = 17112.92;
+let currentTargetM     = 1.000;
+let currentDistM       = 0.000;
+let currentSpeedMps    = 0.00;
+let currentHeadingDeg  = 0.00;
+let currentGyroZ       = 0.00;
+let currentBatteryV    = 12.0;
+let currentPhase       = 'IDLE';
+
+const chartHistory = [];
+const MAX_CHART_POINTS = 120;
+let chartCanvas, chartCtx;
+
+window.addEventListener('DOMContentLoaded', () => {
+  chartCanvas = document.getElementById('telemetryCanvas');
+  chartCtx = chartCanvas.getContext('2d');
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  updateEstimates();
+  renderChart();
+});
+
+function resizeCanvas() {
+  const rect = chartCanvas.getBoundingClientRect();
+  chartCanvas.width = rect.width * window.devicePixelRatio;
+  chartCanvas.height = rect.height * window.devicePixelRatio;
+  chartCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  renderChart();
+}
+
+// ----------------------------------------------------
+// BLE Connection Management
+// ----------------------------------------------------
+async function toggleConnect() {
+  if (isConnected) {
+    disconnectBLE();
+    return;
+  }
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth is not supported in this browser. Please use Google Chrome or Microsoft Edge.');
+    return;
+  }
+
+  try {
+    setConnectionState('connecting', 'SCANNING...');
+    logMsg('Scanning for SciolyEV Bluetooth peripheral...', 'info');
+
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [
+        { namePrefix: 'Scioly' },
+        { services: [SERVICE_UUID] }
+      ],
+      optionalServices: [SERVICE_UUID]
+    });
+
+    bleDevice.addEventListener('gattserverdisconnected', onGattDisconnected);
+
+    logMsg(`Found ${bleDevice.name}. Connecting GATT server...`, 'info');
+    const server = await bleDevice.gatt.connect();
+
+    logMsg('Accessing SciolyEV Service...', 'info');
+    const service = await server.getPrimaryService(SERVICE_UUID);
+
+    const statusChar = await service.getCharacteristic(STATUS_CHAR);
+    await statusChar.startNotifications();
+    statusChar.addEventListener('characteristicvaluechanged', handleTelemetryNotification);
+
+    cmdChar = await service.getCharacteristic(CMD_CHAR);
+
+    onGattConnected();
+  } catch (err) {
+    setConnectionState('disconnected', 'DISCONNECTED');
+    logMsg(`Connection error: ${err.message}`, 'err');
+  }
+}
+
+function onGattConnected() {
+  isConnected = true;
+  setConnectionState('connected', 'CONNECTED');
+  logMsg('Connected to SciolyEV! Synchronizing vehicle configuration...', 'ok');
+  setControlsEnabled(true);
+
+  sendRawCommand('GET_CONFIG');
+}
+
+function onGattDisconnected() {
+  isConnected = false;
+  cmdChar = null;
+  setConnectionState('disconnected', 'DISCONNECTED');
+  logMsg('Vehicle disconnected.', 'warn');
+  setControlsEnabled(false);
+}
+
+function disconnectBLE() {
+  if (bleDevice && bleDevice.gatt.connected) {
+    bleDevice.gatt.disconnect();
+  }
+}
+
+function setConnectionState(state, label) {
+  const pill = document.getElementById('statusPill');
+  const dot  = document.getElementById('statusDot');
+  const txt  = document.getElementById('statusLabel');
+  const btn  = document.getElementById('btnConnect');
+
+  txt.textContent = label;
+  dot.className = 'status-dot ' + state;
+
+  if (state === 'connected') {
+    btn.textContent = 'DISCONNECT';
+    btn.classList.add('connected');
+  } else {
+    btn.textContent = 'CONNECT';
+    btn.classList.remove('connected');
+  }
+}
+
+function setControlsEnabled(enable) {
+  const ids = [
+    'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
+    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnFwdBias',
+    'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
+    'btnCalSteps', 'btnAutoCal'
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enable;
+  });
+}
+
+// ----------------------------------------------------
+// Telemetry Data Ingestion & Parsing (Clean Zero-Legacy)
+// Format: P:<phase> D:<m> T:<m> V:<m/s> H:<deg> G:<dps> B:<V> L:<ticks> R:<ticks> E:<ms>
+// ----------------------------------------------------
+function handleTelemetryNotification(event) {
+  const raw = new TextDecoder().decode(event.target.value).trim();
+
+  if (raw.startsWith('STATUS:')) {
+    logMsg(`STATUS: ${raw.substring(7)}`, 'info');
+    return;
+  }
+  if (raw.startsWith('STOP:')) {
+    logMsg(`STOPPED: ${raw.substring(5)}`, 'warn');
+    updatePhaseBadge('DONE');
+    return;
+  }
+  if (raw.startsWith('CFG:')) {
+    parseConfigPacket(raw);
+    return;
+  }
+
+  const tokens = raw.split(' ');
+  const data = {};
+  tokens.forEach(tok => {
+    const colon = tok.indexOf(':');
+    if (colon !== -1) {
+      const k = tok.substring(0, colon);
+      const v = tok.substring(colon + 1);
+      data[k] = v;
+    }
+  });
+
+  if (data.P) updatePhaseBadge(data.P);
+
+  // Distance in meters
+  if (data.D !== undefined) {
+    let d = parseFloat(data.D) || 0.0;
+    if (d > 30.0) d /= 1000.0;
+    currentDistM = d;
+    document.getElementById('dispDistNow').textContent = currentDistM.toFixed(3);
+    document.getElementById('dispDistFeet').textContent = (currentDistM * 3.28084).toFixed(2) + ' ft';
+  }
+
+  // Target in meters
+  if (data.T !== undefined) {
+    let t = parseFloat(data.T) || 0.0;
+    if (t > 30.0) t /= 1000.0;
+    currentTargetM = t;
+    document.getElementById('dispDistTarget').textContent = currentTargetM.toFixed(3);
+  }
+
+  const remain = Math.max(0, currentTargetM - currentDistM);
+  document.getElementById('dispRemaining').textContent = `Remaining: ${remain.toFixed(3)} m`;
+
+  const pct = currentTargetM > 0 ? Math.min(100, Math.max(0, (currentDistM / currentTargetM) * 100)) : 0;
+  document.getElementById('progressFill').style.width = pct.toFixed(1) + '%';
+  document.getElementById('dispProgressPct').textContent = pct.toFixed(1) + '%';
+
+  if (data.V !== undefined) {
+    currentSpeedMps = parseFloat(data.V) || 0.0;
+    document.getElementById('dispSpeed').textContent = currentSpeedMps.toFixed(2);
+  }
+
+  // Heading & Gyroscope
+  if (data.H !== undefined) {
+    currentHeadingDeg = parseFloat(data.H) || 0.0;
+    document.getElementById('dispHeading').textContent = (currentHeadingDeg >= 0 ? '+' : '') + currentHeadingDeg.toFixed(1) + '°';
+    document.getElementById('compassNeedle').style.transform = `rotate(${currentHeadingDeg * 2}deg)`;
+
+    const driftEl = document.getElementById('dispHeadingStatus');
+    if (Math.abs(currentHeadingDeg) < 1.0) {
+      driftEl.textContent = 'ON TRACK';
+      driftEl.style.color = 'var(--status-ready)';
+    } else {
+      driftEl.textContent = currentHeadingDeg > 0 ? 'DRIFT R' : 'DRIFT L';
+      driftEl.style.color = 'var(--status-warn)';
+    }
+  }
+
+  if (data.G !== undefined) {
+    currentGyroZ = parseFloat(data.G) || 0.0;
+    document.getElementById('dispGyroRate').textContent = currentGyroZ.toFixed(1);
+  }
+
+  if (data.E !== undefined) {
+    const ms = parseInt(data.E, 10) || 0;
+    document.getElementById('dispElapsed').textContent = (ms / 1000.0).toFixed(2);
+  }
+
+  if (data.B !== undefined) {
+    currentBatteryV = parseFloat(data.B) || 0.0;
+    updateBatteryDisplay(currentBatteryV);
+  }
+
+  if (data.L !== undefined && data.R !== undefined) {
+    const ticksA = parseInt(data.L, 10) || 0;
+    const ticksB = parseInt(data.R, 10) || 0;
+    document.getElementById('motorStepsA').textContent = ticksA.toLocaleString();
+    document.getElementById('motorStepsB').textContent = ticksB.toLocaleString();
+
+    const maxTicks = Math.max(1, currentTargetM * currentCalibration);
+    document.getElementById('motorFillA').style.width = Math.min(100, (Math.abs(ticksA) / maxTicks) * 100) + '%';
+    document.getElementById('motorFillB').style.width = Math.min(100, (Math.abs(ticksB) / maxTicks) * 100) + '%';
+
+    const delta = ticksA - ticksB;
+    const deltaEl = document.getElementById('compDeltaBadge');
+    if (deltaEl) {
+      deltaEl.textContent = `Δ ${delta >= 0 ? '+' : ''}${delta} ticks`;
+      if (Math.abs(delta) < 20) {
+        deltaEl.style.borderColor = 'var(--status-ready)';
+        deltaEl.style.color = 'var(--status-ready)';
+      } else {
+        deltaEl.style.borderColor = 'var(--status-warn)';
+        deltaEl.style.color = 'var(--status-warn)';
+      }
+    }
+  }
+
+  if (data.CL !== undefined && data.CR !== undefined) {
+    const cl = parseFloat(data.CL) || 1.0;
+    const cr = parseFloat(data.CR) || 1.0;
+    const compLeftEl = document.getElementById('compLeftVal');
+    const compRightEl = document.getElementById('compRightVal');
+    if (compLeftEl) compLeftEl.textContent = `L: ${cl.toFixed(3)}x`;
+    if (compRightEl) compRightEl.textContent = `R: ${cr.toFixed(3)}x`;
+  }
+
+  if (data.M !== undefined) {
+    isMotorsArmed = (data.M === '1');
+    const armBtn = document.getElementById('btnArmToggle');
+    if (armBtn) {
+      if (isMotorsArmed) {
+        armBtn.textContent = '🔓 DISARM MOTORS';
+        armBtn.classList.remove('disarmed');
+      } else {
+        armBtn.textContent = '🔒 ARM MOTORS';
+        armBtn.classList.add('disarmed');
+      }
+    }
+  }
+
+  // Update live Push Calibration accumulator if modal is active
+  if (isPushCalActive) {
+    const ticksA = parseInt(data.L, 10) || 0;
+    const ticksB = parseInt(data.R, 10) || 0;
+    const avg = Math.round((Math.abs(ticksA) + Math.abs(ticksB)) / 2.0);
+    const targetM = parseFloat(document.getElementById('inpPushTargetM').value) || 1.0;
+    const calFactor = targetM > 0 ? (avg / targetM) : 0;
+
+    const elL = document.getElementById('calLiveLeftTicks');
+    const elR = document.getElementById('calLiveRightTicks');
+    const elAvg = document.getElementById('calLiveAvgTicks');
+    const elFactor = document.getElementById('calLiveFactor');
+    if (elL) elL.textContent = ticksA.toLocaleString();
+    if (elR) elR.textContent = ticksB.toLocaleString();
+    if (elAvg) elAvg.textContent = avg.toLocaleString();
+    if (elFactor) elFactor.textContent = calFactor.toFixed(2);
+  }
+
+  addChartPoint(currentDistM, currentSpeedMps, currentHeadingDeg);
+}
+
+function parseConfigPacket(cfgStr) {
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f
+  const clean = cfgStr.replace('CFG:', '');
+  const tokens = clean.split(' ');
+  tokens.forEach(tok => {
+    const [k, v] = tok.split(':');
+    let fVal = parseFloat(v);
+    if (isNaN(fVal)) return;
+
+    if (k === 'DF') {
+      if (fVal > 30.0) fVal /= 1000.0;
+      document.getElementById('inpFwdDist').value = fVal.toFixed(3);
+    } else if (k === 'DR') {
+      if (fVal > 30.0) fVal /= 1000.0;
+      document.getElementById('inpRevDist').value = fVal.toFixed(3);
+    } else if (k === 'TF') {
+      document.getElementById('inpFwdTime').value = fVal.toFixed(1);
+    } else if (k === 'TR') {
+      document.getElementById('inpRevTime').value = fVal.toFixed(1);
+    } else if (k === 'KP') {
+      document.getElementById('inpKp').value = fVal.toFixed(1);
+    } else if (k === 'BF') {
+      document.getElementById('inpFwdBias').value = fVal.toFixed(1);
+    } else if (k === 'BR') {
+      document.getElementById('inpRevBias').value = fVal.toFixed(1);
+    } else if (k === 'P') {
+      document.getElementById('inpPause').value = fVal.toFixed(0);
+    } else if (k === 'C') {
+      currentCalibration = fVal;
+      document.getElementById('inpCalSteps').value = fVal.toFixed(1);
+      document.getElementById('lblCurrentCal').textContent = `Current: ${fVal.toFixed(0)} ticks/m`;
+    }
+  });
+
+  updateEstimates();
+  logMsg('Vehicle parameters synchronized.', 'ok');
+}
+
+function updatePhaseBadge(phase) {
+  currentPhase = phase;
+  const badge = document.getElementById('phaseBadge');
+  badge.textContent = phase;
+
+  if (phase === 'FWD' || phase === 'REV') {
+    badge.style.color = 'var(--status-run)';
+    badge.style.borderColor = 'var(--status-run)';
+  } else if (phase === 'DONE') {
+    badge.style.color = 'var(--status-ready)';
+    badge.style.borderColor = 'var(--status-ready)';
+  } else if (phase === 'ABORT') {
+    badge.style.color = 'var(--status-danger)';
+    badge.style.borderColor = 'var(--status-danger)';
+  } else {
+    badge.style.color = 'var(--text-main)';
+    badge.style.borderColor = 'var(--border-medium)';
+  }
+}
+
+function updateBatteryDisplay(v) {
+  document.getElementById('batText').textContent = v.toFixed(2) + ' V';
+  const fill = document.getElementById('batFill');
+
+  const pct = Math.min(100, Math.max(0, ((v - 10.0) / (12.6 - 10.0)) * 100));
+  fill.style.width = pct + '%';
+
+  if (v < 10.5) fill.style.backgroundColor = 'var(--status-danger)';
+  else if (v < 11.2) fill.style.backgroundColor = 'var(--status-warn)';
+  else fill.style.backgroundColor = 'var(--status-ready)';
+}
+
+// ----------------------------------------------------
+// Realtime Canvas Strip Chart
+// ----------------------------------------------------
+function addChartPoint(dist, speed, heading) {
+  chartHistory.push({ dist, speed, heading });
+  if (chartHistory.length > MAX_CHART_POINTS) {
+    chartHistory.shift();
+  }
+  renderChart();
+}
+
+function renderChart() {
+  if (!chartCtx) return;
+  const w = chartCanvas.clientWidth;
+  const h = chartCanvas.clientHeight;
+
+  chartCtx.clearRect(0, 0, w, h);
+
+  chartCtx.strokeStyle = '#1e2026';
+  chartCtx.lineWidth = 1;
+  for (let y = 0; y < h; y += 35) {
+    chartCtx.beginPath();
+    chartCtx.moveTo(0, y);
+    chartCtx.lineTo(w, y);
+    chartCtx.stroke();
+  }
+
+  if (chartHistory.length < 2) return;
+
+  const maxDist = Math.max(currentTargetM * 1.1, 1.0);
+  const maxSpeed = 1.5;
+
+  // Distance (White)
+  chartCtx.strokeStyle = '#e2e8f0';
+  chartCtx.lineWidth = 2;
+  chartCtx.beginPath();
+  chartHistory.forEach((pt, i) => {
+    const x = (i / (MAX_CHART_POINTS - 1)) * w;
+    const y = h - (pt.dist / maxDist) * h;
+    if (i === 0) chartCtx.moveTo(x, y);
+    else chartCtx.lineTo(x, y);
+  });
+  chartCtx.stroke();
+
+  // Speed (Blue)
+  chartCtx.strokeStyle = '#60a5fa';
+  chartCtx.lineWidth = 1.5;
+  chartCtx.beginPath();
+  chartHistory.forEach((pt, i) => {
+    const x = (i / (MAX_CHART_POINTS - 1)) * w;
+    const y = h - (pt.speed / maxSpeed) * h;
+    if (i === 0) chartCtx.moveTo(x, y);
+    else chartCtx.lineTo(x, y);
+  });
+  chartCtx.stroke();
+
+  // Heading (Green)
+  chartCtx.strokeStyle = '#4ade80';
+  chartCtx.lineWidth = 1;
+  chartCtx.beginPath();
+  chartHistory.forEach((pt, i) => {
+    const x = (i / (MAX_CHART_POINTS - 1)) * w;
+    const y = (h / 2) - (pt.heading / 15.0) * (h / 2);
+    if (i === 0) chartCtx.moveTo(x, y);
+    else chartCtx.lineTo(x, y);
+  });
+  chartCtx.stroke();
+}
+
+// ----------------------------------------------------
+// Command Transmission: Clean, Direct Protocol
+// ----------------------------------------------------
+async function sendRawCommand(cmd) {
+  if (!cmdChar) return;
+  try {
+    await cmdChar.writeValue(new TextEncoder().encode(cmd));
+    logMsg(`→ TX: ${cmd}`, 'tx');
+  } catch (err) {
+    logMsg(`TX Error [${cmd}]: ${err.message}`, 'err');
+  }
+}
+
+async function sendParam(key, inputId, btnId) {
+  const val = parseFloat(document.getElementById(inputId).value);
+  if (isNaN(val)) return;
+
+  const btn = document.getElementById(btnId);
+  await sendRawCommand(`${key}:${val}`);
+
+  if (btn) {
+    const old = btn.textContent;
+    btn.textContent = 'SENT';
+    setTimeout(() => { btn.textContent = old; }, 1200);
+  }
+}
+
+async function sendAllParameters() {
+  const gap = () => new Promise(r => setTimeout(r, 60));
+  await sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist'); await gap();
+  await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap();
+  await sendParam('KP',     'inpKp',      'btnKp');      await gap();
+  await sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias'); await gap();
+  await sendParam('DIST_R', 'inpRevDist', 'btnRevDist'); await gap();
+  await sendParam('TIME_R', 'inpRevTime', 'btnRevTime'); await gap();
+  await sendParam('BIAS_R', 'inpRevBias', 'btnRevBias'); await gap();
+  await sendParam('PAUSE',  'inpPause',   'btnPause');
+  logMsg('All parameters sent to vehicle.', 'ok');
+}
+
+// ----------------------------------------------------
+// Reset, Start, Stop Actions
+// ----------------------------------------------------
+async function resetVehicle() {
+  if (!cmdChar) return;
+  const btn = document.getElementById('btnReset');
+  btn.textContent = '↺ RESETTING...';
+  btn.disabled = true;
+
+  chartHistory.length = 0;
+  renderChart();
+
+  await sendAllParameters();
+  await new Promise(r => setTimeout(r, 80));
+  await sendRawCommand('RESET');
+
+  document.getElementById('dispDistNow').textContent = '0.000';
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('dispProgressPct').textContent = '0.0%';
+  document.getElementById('dispHeading').textContent = '0.0°';
+  document.getElementById('compassNeedle').style.transform = 'rotate(0deg)';
+  document.getElementById('motorStepsA').textContent = '0';
+  document.getElementById('motorStepsB').textContent = '0';
+  document.getElementById('motorFillA').style.width = '0%';
+  document.getElementById('motorFillB').style.width = '0%';
+
+  const compLeftEl = document.getElementById('compLeftVal');
+  const compRightEl = document.getElementById('compRightVal');
+  const deltaEl = document.getElementById('compDeltaBadge');
+  if (compLeftEl) compLeftEl.textContent = 'L: 1.000x';
+  if (compRightEl) compRightEl.textContent = 'R: 1.000x';
+  if (deltaEl) {
+    deltaEl.textContent = 'Δ 0 ticks';
+    deltaEl.style.borderColor = 'var(--border-subtle)';
+    deltaEl.style.color = 'inherit';
+  }
+
+  updatePhaseBadge('IDLE');
+
+  btn.textContent = '↺ RESET VEHICLE & ARM';
+  btn.disabled = false;
+  logMsg('Vehicle reset to ready state.', 'ok');
+}
+
+async function startVehicle() {
+  await sendRawCommand('START');
+  logMsg('Run start sequence initiated!', 'ok');
+}
+
+async function emergencyStop() {
+  await sendRawCommand('STOP');
+  logMsg('Emergency stop sent!', 'err');
+}
+
+// ----------------------------------------------------
+// Motor Arming & Push-Roll Calibration Modal Controls
+// ----------------------------------------------------
+let isMotorsArmed = true;
+let isPushCalActive = false;
+
+async function toggleMotorArm() {
+  if (!cmdChar) return;
+  const targetArm = !isMotorsArmed;
+  await sendRawCommand(targetArm ? 'ARM' : 'DISARM');
+  isMotorsArmed = targetArm;
+  const armBtn = document.getElementById('btnArmToggle');
+  if (armBtn) {
+    if (isMotorsArmed) {
+      armBtn.textContent = '🔓 DISARM MOTORS';
+      armBtn.classList.remove('disarmed');
+    } else {
+      armBtn.textContent = '🔒 ARM MOTORS';
+      armBtn.classList.add('disarmed');
+    }
+  }
+  logMsg(targetArm ? 'Motors armed (holding torque active).' : 'Motors disarmed (free-wheeling).', 'ok');
+}
+
+function openPushCalModal() {
+  document.getElementById('calModal').style.display = 'flex';
+  document.getElementById('calLiveLeftTicks').textContent = '0';
+  document.getElementById('calLiveRightTicks').textContent = '0';
+  document.getElementById('calLiveAvgTicks').textContent = '0';
+  document.getElementById('calLiveFactor').textContent = '0.00';
+  document.getElementById('btnPushStart').disabled = false;
+  document.getElementById('btnPushFinish').disabled = true;
+  isPushCalActive = false;
+}
+
+function closePushCalModal() {
+  document.getElementById('calModal').style.display = 'none';
+  isPushCalActive = false;
+}
+
+async function startPushCalibration() {
+  if (!cmdChar) return;
+  isPushCalActive = true;
+  await sendRawCommand('CAL_START');
+  document.getElementById('btnPushStart').disabled = true;
+  document.getElementById('btnPushFinish').disabled = false;
+  logMsg('Push calibration active: motors disarmed. Roll vehicle along tape measure...', 'warn');
+}
+
+async function finishPushCalibration() {
+  if (!cmdChar) return;
+  const pushM = parseFloat(document.getElementById('inpPushTargetM').value);
+  if (isNaN(pushM) || pushM <= 0.05) {
+    alert('Please enter a valid push distance in meters (e.g. 1.000).');
+    return;
+  }
+  await sendRawCommand(`CAL_FINISH:${pushM.toFixed(3)}`);
+  isPushCalActive = false;
+  logMsg(`Push calibration command sent for ${pushM.toFixed(3)}m.`, 'ok');
+  setTimeout(() => {
+    closePushCalModal();
+  }, 1200);
+}
+
+// ----------------------------------------------------
+// Calibration Tools
+// ----------------------------------------------------
+async function sendCalibrationDirect() {
+  const val = parseFloat(document.getElementById('inpCalSteps').value);
+  if (isNaN(val) || val <= 500) return;
+  await sendRawCommand(`CAL:${val.toFixed(2)}`);
+  currentCalibration = val;
+  document.getElementById('lblCurrentCal').textContent = `Current: ${val.toFixed(0)} ticks/m`;
+  updateEstimates();
+  logMsg(`Saved calibration factor: ${val.toFixed(1)} ticks/meter`, 'ok');
+}
+
+async function sendAutoCalibration() {
+  const measured = parseFloat(document.getElementById('inpMeasuredDist').value);
+  if (isNaN(measured) || measured <= 0.05) {
+    alert('Please enter a valid measured distance in meters (e.g. 0.985 or 7.950).');
+    return;
+  }
+  await sendRawCommand(`CALIBRATE:${measured.toFixed(4)}`);
+  logMsg(`Sent auto-calibration measurement: ${measured.toFixed(3)} m`, 'info');
+}
+
+function setPresetDist(distM) {
+  document.getElementById('inpFwdDist').value = distM.toFixed(3);
+  document.getElementById('inpRevDist').value = distM.toFixed(3);
+  updateEstimates();
+  if (isConnected) {
+    sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist');
+    setTimeout(() => sendParam('DIST_R', 'inpRevDist', 'btnRevDist'), 70);
+  }
+}
+
+function updateEstimates() {
+  const fDist = parseFloat(document.getElementById('inpFwdDist').value) || 0;
+  const fTime = Math.max(0.5, parseFloat(document.getElementById('inpFwdTime').value) || 10);
+  const rDist = parseFloat(document.getElementById('inpRevDist').value) || 0;
+  const rTime = Math.max(0.5, parseFloat(document.getElementById('inpRevTime').value) || 10);
+
+  const calVal = parseFloat(document.getElementById('inpCalSteps').value) || currentCalibration;
+  currentCalibration = calVal;
+
+  const fSpeed = fDist / fTime;
+  const rSpeed = rDist / rTime;
+
+  document.getElementById('dispDistTarget').textContent = fDist.toFixed(3);
+  currentTargetM = fDist;
+}
+
+// ----------------------------------------------------
+// Logging & CSV Export
+// ----------------------------------------------------
+const logRecords = [];
+
+function logMsg(msg, type = 'rx') {
+  const consoleEl = document.getElementById('logConsole');
+  const now = new Date();
+  const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+
+  const line = document.createElement('span');
+  line.className = `log-line ${type}`;
+  line.textContent = `[${timeStr}] ${msg}`;
+
+  consoleEl.appendChild(line);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+
+  logRecords.push({ timestamp: timeStr, message: msg, type });
+}
+
+function clearLog() {
+  document.getElementById('logConsole').innerHTML = '';
+  logRecords.length = 0;
+}
+
+function exportLogCsv() {
+  if (logRecords.length === 0) {
+    alert('Log is currently empty.');
+    return;
+  }
+  let csv = 'Timestamp,Type,Message\n';
+  logRecords.forEach(r => {
+    csv += `"${r.timestamp}","${r.type}","${r.message.replace(/"/g, '""')}"\n`;
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `SciolyEV_Run_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
