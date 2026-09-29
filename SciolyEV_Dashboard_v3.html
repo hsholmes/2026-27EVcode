@@ -906,6 +906,19 @@
             </div>
             <span id="compDeltaBadge" class="nav-badge" style="font-size:10px;padding:3px 8px;border:1px solid var(--border-subtle);">Δ 0 ticks</span>
           </div>
+
+          <!-- Wheel Tracking: encoder rotation vs commanded steps -->
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;" class="mono">
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;">WHEEL TRACKING (ENCODER / STEPS)</span>
+              <div style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:600;">
+                <span id="trackLeftVal">L: —</span>
+                <span style="color:var(--border);">/</span>
+                <span id="trackRightVal">R: —</span>
+              </div>
+            </div>
+            <span id="crossTrackBadge" class="nav-badge" style="font-size:10px;padding:3px 8px;border:1px solid var(--border-subtle);">Offset —</span>
+          </div>
         </div>
       </div>
 
@@ -998,11 +1011,23 @@
             </div>
           </div>
 
+          <!-- KX Cross-Track -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">KX Cross-Track</span>
+              <span class="param-sub">° per m off line</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpKx" value="20.0" step="1.0" min="0" max="200">
+              <button class="btn-send-mini mono" id="btnKx" onclick="sendParam('KX', 'inpKx', 'btnKx')" disabled>SEND</button>
+            </div>
+          </div>
+
           <!-- Forward Steering Bias -->
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">Forward Bias</span>
-              <span class="param-sub">% (-L / +R)</span>
+              <span class="param-sub">st/s (+ steers R)</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpFwdBias" value="10.0" step="1.0" min="-50" max="50">
@@ -1038,7 +1063,7 @@
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">Reverse Bias</span>
-              <span class="param-sub">% (-L / +R)</span>
+              <span class="param-sub">st/s (+ steers R)</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpRevBias" value="10.0" step="1.0" min="-50" max="50">
@@ -1296,7 +1321,7 @@ function setConnectionState(state, label) {
 function setControlsEnabled(enable) {
   const ids = [
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
-    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnFwdBias',
+    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnKx', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
     'btnCalSteps', 'btnAutoCal'
   ];
@@ -1373,14 +1398,17 @@ function handleTelemetryNotification(event) {
   if (data.H !== undefined) {
     currentHeadingDeg = parseFloat(data.H) || 0.0;
     document.getElementById('dispHeading').textContent = (currentHeadingDeg >= 0 ? '+' : '') + currentHeadingDeg.toFixed(1) + '°';
-    document.getElementById('compassNeedle').style.transform = `rotate(${currentHeadingDeg * 2}deg)`;
+    // Positive heading = nose turned left (counter-clockwise viewed from
+    // above), confirmed on the car. CSS rotate() is clockwise-positive,
+    // so the needle is negated to swing the same way the car did.
+    document.getElementById('compassNeedle').style.transform = `rotate(${-currentHeadingDeg * 2}deg)`;
 
     const driftEl = document.getElementById('dispHeadingStatus');
     if (Math.abs(currentHeadingDeg) < 1.0) {
       driftEl.textContent = 'ON TRACK';
       driftEl.style.color = 'var(--status-ready)';
     } else {
-      driftEl.textContent = currentHeadingDeg > 0 ? 'DRIFT R' : 'DRIFT L';
+      driftEl.textContent = currentHeadingDeg > 0 ? 'DRIFT L' : 'DRIFT R';
       driftEl.style.color = 'var(--status-warn)';
     }
   }
@@ -1433,6 +1461,30 @@ function handleTelemetryNotification(event) {
     if (compRightEl) compRightEl.textContent = `R: ${cr.toFixed(3)}x`;
   }
 
+  // Wheel tracking %: both read slightly under 100% (sampling lag), so
+  // what matters is one wheel falling well behind the other.
+  if (data.WL !== undefined && data.WR !== undefined) {
+    const wl = parseFloat(data.WL) || 0;
+    const wr = parseFloat(data.WR) || 0;
+    const elL = document.getElementById('trackLeftVal');
+    const elR = document.getElementById('trackRightVal');
+    elL.textContent = `L: ${wl.toFixed(0)}%`;
+    elR.textContent = `R: ${wr.toFixed(0)}%`;
+    const lagging = Math.abs(wl - wr) > 5;
+    elL.style.color = lagging && wl < wr ? 'var(--status-warn)' : 'var(--text-main)';
+    elR.style.color = lagging && wr < wl ? 'var(--status-warn)' : 'var(--text-main)';
+  }
+
+  // Cross-track offset from the line, + = left of it
+  if (data.X !== undefined) {
+    const x = parseFloat(data.X) || 0;
+    const badge = document.getElementById('crossTrackBadge');
+    badge.textContent = Math.abs(x) < 1 ? 'Offset 0 mm' : `Offset ${Math.abs(x).toFixed(0)} mm ${x > 0 ? 'L' : 'R'}`;
+    const off = Math.abs(x) > 30;
+    badge.style.borderColor = off ? 'var(--status-warn)' : 'var(--border-subtle)';
+    badge.style.color = off ? 'var(--status-warn)' : 'inherit';
+  }
+
   if (data.M !== undefined) {
     isMotorsArmed = (data.M === '1');
     const armBtn = document.getElementById('btnArmToggle');
@@ -1468,8 +1520,22 @@ function handleTelemetryNotification(event) {
   addChartPoint(currentDistM, currentSpeedMps, currentHeadingDeg);
 }
 
+// Inputs the user has edited but not yet sent. The car answers every
+// setter with its FULL config, and writing that into every box used to
+// revert the not-yet-sent fields to the car's old values mid-upload - so
+// "Sync All" / "Reset & Arm" only ever really changed the first parameter.
+// Config echoes now leave edited fields alone until they've been sent.
+const dirtyInputs = new Set();
+document.querySelectorAll('.param-field input').forEach(el => {
+  el.addEventListener('input', () => dirtyInputs.add(el.id));
+});
+
+function setFromConfig(id, text) {
+  if (!dirtyInputs.has(id)) document.getElementById(id).value = text;
+}
+
 function parseConfigPacket(cfgStr) {
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f
   const clean = cfgStr.replace('CFG:', '');
   const tokens = clean.split(' ');
   tokens.forEach(tok => {
@@ -1479,25 +1545,27 @@ function parseConfigPacket(cfgStr) {
 
     if (k === 'DF') {
       if (fVal > 30.0) fVal /= 1000.0;
-      document.getElementById('inpFwdDist').value = fVal.toFixed(3);
+      setFromConfig('inpFwdDist', fVal.toFixed(3));
     } else if (k === 'DR') {
       if (fVal > 30.0) fVal /= 1000.0;
-      document.getElementById('inpRevDist').value = fVal.toFixed(3);
+      setFromConfig('inpRevDist', fVal.toFixed(3));
     } else if (k === 'TF') {
-      document.getElementById('inpFwdTime').value = fVal.toFixed(1);
+      setFromConfig('inpFwdTime', fVal.toFixed(1));
     } else if (k === 'TR') {
-      document.getElementById('inpRevTime').value = fVal.toFixed(1);
+      setFromConfig('inpRevTime', fVal.toFixed(1));
     } else if (k === 'KP') {
-      document.getElementById('inpKp').value = fVal.toFixed(1);
+      setFromConfig('inpKp', fVal.toFixed(1));
+    } else if (k === 'KX') {
+      setFromConfig('inpKx', fVal.toFixed(1));
     } else if (k === 'BF') {
-      document.getElementById('inpFwdBias').value = fVal.toFixed(1);
+      setFromConfig('inpFwdBias', fVal.toFixed(1));
     } else if (k === 'BR') {
-      document.getElementById('inpRevBias').value = fVal.toFixed(1);
+      setFromConfig('inpRevBias', fVal.toFixed(1));
     } else if (k === 'P') {
-      document.getElementById('inpPause').value = fVal.toFixed(0);
+      setFromConfig('inpPause', fVal.toFixed(0));
     } else if (k === 'C') {
       currentCalibration = fVal;
-      document.getElementById('inpCalSteps').value = fVal.toFixed(1);
+      setFromConfig('inpCalSteps', fVal.toFixed(1));
       document.getElementById('lblCurrentCal').textContent = `Current: ${fVal.toFixed(0)} ticks/m`;
     }
   });
@@ -1626,6 +1694,7 @@ async function sendParam(key, inputId, btnId) {
 
   const btn = document.getElementById(btnId);
   await sendRawCommand(`${key}:${val}`);
+  dirtyInputs.delete(inputId);
 
   if (btn) {
     const old = btn.textContent;
@@ -1639,6 +1708,7 @@ async function sendAllParameters() {
   await sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist'); await gap();
   await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap();
   await sendParam('KP',     'inpKp',      'btnKp');      await gap();
+  await sendParam('KX',     'inpKx',      'btnKx');      await gap();
   await sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias'); await gap();
   await sendParam('DIST_R', 'inpRevDist', 'btnRevDist'); await gap();
   await sendParam('TIME_R', 'inpRevTime', 'btnRevTime'); await gap();
@@ -1677,6 +1747,9 @@ async function resetVehicle() {
   const compRightEl = document.getElementById('compRightVal');
   const deltaEl = document.getElementById('compDeltaBadge');
   if (compLeftEl) compLeftEl.textContent = 'L: 1.000x';
+  document.getElementById('trackLeftVal').textContent = 'L: —';
+  document.getElementById('trackRightVal').textContent = 'R: —';
+  document.getElementById('crossTrackBadge').textContent = 'Offset —';
   if (compRightEl) compRightEl.textContent = 'R: 1.000x';
   if (deltaEl) {
     deltaEl.textContent = 'Δ 0 ticks';
@@ -1772,6 +1845,7 @@ async function sendCalibrationDirect() {
   const val = parseFloat(document.getElementById('inpCalSteps').value);
   if (isNaN(val) || val <= 500) return;
   await sendRawCommand(`CAL:${val.toFixed(2)}`);
+  dirtyInputs.delete('inpCalSteps');
   currentCalibration = val;
   document.getElementById('lblCurrentCal').textContent = `Current: ${val.toFixed(0)} ticks/m`;
   updateEstimates();
@@ -1791,6 +1865,8 @@ async function sendAutoCalibration() {
 function setPresetDist(distM) {
   document.getElementById('inpFwdDist').value = distM.toFixed(3);
   document.getElementById('inpRevDist').value = distM.toFixed(3);
+  dirtyInputs.add('inpFwdDist');
+  dirtyInputs.add('inpRevDist');
   updateEstimates();
   if (isConnected) {
     sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist');
