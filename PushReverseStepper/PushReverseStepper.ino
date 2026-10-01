@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <string.h>
 #include "esp_timer.h"
+#include "driver/gpio.h"
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -82,8 +83,11 @@ const float LOW_VOLTAGE_THRESHOLD = 11.0;
 #define AS5600_TICKS_PER_REV 4096.0
 
 // Flip these if a wheel's encoder distance reads negative while driving
-// forward - depends on which way the magnet ended up facing.
-const bool LEFT_ENC_INVERT = false;
+// forward - depends on which way the magnet ended up facing. Only the
+// telemetry uses them (the control code uses per-leg magnitudes). The
+// motors are mounted mirror-image, so the left one counts down going
+// forward (confirmed on the car 2026-09-30).
+const bool LEFT_ENC_INVERT = true;
 const bool RIGHT_ENC_INVERT = false;
 
 // Fixed physical parameters
@@ -100,8 +104,20 @@ const float DEFAULT_TICKS_PER_METER = AS5600_TICKS_PER_REV / (MM_PER_REV / 1000.
 // is decided by the encoders; this cap only exists to stop the motors
 // if the encoders fail to confirm - see loop().
 const float STEP_SAFETY_MARGIN = 1.3;
+
+// Forward-only mode for calibrating and tuning distance: the run ends
+// after the forward leg (no pause, no reverse). Set false to restore the
+// full push-reverse run.
+const bool FORWARD_ONLY = true;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
 const float MAX_SAFE_SPEED = 4500.0;  // steps/sec ceiling
+
+// The leg's speed profile (ramp-up and ramp-down) is computed in loop();
+// the slew timer's own per-wheel slew runs this many times faster than the
+// leg accel, so it only smooths between loop passes. If the ISR slewed at
+// the leg accel itself, both wheels would climb in lockstep during the
+// ramp-up and the steering correction would have no effect until it ended.
+const float WHEEL_SLEW_FACTOR = 4.0;
 
 // ============================================================
 // Runtime-tunable parameters - meters/seconds to match the dashboard.
@@ -123,6 +139,15 @@ volatile float rt_KX = 20.0;
 const float MAX_XT_HEADING_DEG = 5.0;  // cap on how hard it aims back at the line
 float ticksPerMeter = DEFAULT_TICKS_PER_METER;
 
+// Distance tuning factor, separate from the encoder calibration: each leg
+// stops at (set distance x this) of encoder distance. Absorbs whatever the
+// ticks/m calibration doesn't - stopping overshoot, tire slip at speed -
+// without touching ticksPerMeter. Telemetry distance is divided by it, so
+// the dashboard shows the corrected (real-world) distance.
+volatile float rt_DIST_FACTOR = 1.0;
+const float MIN_DIST_FACTOR = 0.5;
+const float MAX_DIST_FACTOR = 1.5;
+
 void loadPreferences() {
   prefs.begin("scioly_ev", true);
   rt_FORWARD_DIST_M = prefs.getFloat("dist_fwd_m", rt_FORWARD_DIST_M);
@@ -135,6 +160,7 @@ void loadPreferences() {
   rt_PAUSE_MS = (unsigned long)prefs.getFloat("pause_ms", (float)rt_PAUSE_MS);
   ticksPerMeter = prefs.getFloat("ticks_per_m", ticksPerMeter);
   rt_KX = prefs.getFloat("kx_xtrack", rt_KX);
+  rt_DIST_FACTOR = constrain(prefs.getFloat("dist_factor", rt_DIST_FACTOR), MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   prefs.end();
 }
 
@@ -163,8 +189,8 @@ float REVERSE_ACCEL = 0;
 // Recalculate step caps, speeds, and accel from the current parameters.
 // Called on startup and whenever a leg's distance/time changes via BLE.
 void recalcRoute() {
-  long forwardNominalSteps = (long)(rt_FORWARD_DIST_M * STEPS_PER_METER);
-  long reverseNominalSteps = (long)(rt_REVERSE_DIST_M * STEPS_PER_METER);
+  long forwardNominalSteps = (long)(rt_FORWARD_DIST_M * rt_DIST_FACTOR * STEPS_PER_METER);
+  long reverseNominalSteps = (long)(rt_REVERSE_DIST_M * rt_DIST_FACTOR * STEPS_PER_METER);
 
   FORWARD_STEP_CAP = (long)(forwardNominalSteps * STEP_SAFETY_MARGIN);
   REVERSE_STEP_CAP = (long)(reverseNominalSteps * STEP_SAFETY_MARGIN);
@@ -197,14 +223,32 @@ void recalcRoute() {
 }
 
 // ============================================================
-// Stepper engine - esp_timer periodic callback. Runs at TIMER_FREQ Hz
-// in the esp_timer service task (a very high priority FreeRTOS task,
-// not a raw hardware ISR) - 20kHz oversamples the fastest step rate
-// this drivetrain needs by roughly 4x.
+// Stepper engine, in two parts:
+//
+// 1. Step pulses: one hardware timer (GPTimer, 1 MHz) per wheel. Each
+//    alarm fires one STEP pulse and re-arms itself for exactly one step
+//    interval, so pulses are evenly spaced to the microsecond. The
+//    interrupt is allocated on core 1 (the core setup() runs on), away
+//    from the BLE stack on core 0. The old engine counted in 50us ticks
+//    of a 20kHz esp_timer running as a task on core 0 next to BLE: at
+//    4500 st/s the step gap alternated 200/250us and BLE could delay or
+//    bunch ticks, which is what made the right motor lose steps and
+//    jitter at mid/high speed. The ISR is integer-only - floating point
+//    isn't allowed in an interrupt on the ESP32-S3 (Xtensa).
+//
+// 2. Speed slew: a 1 kHz esp_timer (task context, floats OK) moves each
+//    wheel's current speed toward its target at activeAccel and turns it
+//    into a step interval for the ISR. Late ticks here only delay a tiny
+//    speed change; they no longer disturb pulse timing.
 // ============================================================
-#define TIMER_FREQ 20000
+#define SLEW_FREQ 1000
+const uint32_t STEP_TIMER_HZ = 1000000;  // 1 tick = 1 us
+const uint32_t IDLE_POLL_US = 1000;      // alarm period while a wheel isn't stepping
+const float MIN_STEP_RATE = 50.0;        // slowest interval used, so a wheel starting from 0 isn't stuck behind one huge gap
 
-esp_timer_handle_t stepTimerHandle;
+esp_timer_handle_t slewTimerHandle;
+hw_timer_t* leftStepTimer = nullptr;
+hw_timer_t* rightStepTimer = nullptr;
 
 volatile long leftPosition = 0;
 volatile long rightPosition = 0;
@@ -214,20 +258,63 @@ volatile float leftCurrentSpeed = 0;
 volatile float rightCurrentSpeed = 0;
 volatile float leftTargetSpeed = 0;
 volatile float rightTargetSpeed = 0;
-volatile float leftCounter = 0;
-volatile float rightCounter = 0;
+volatile uint32_t leftIntervalUs = 0;  // 0 = not stepping
+volatile uint32_t rightIntervalUs = 0;
 volatile long leftTotalSteps = 0;
 volatile long rightTotalSteps = 0;
 volatile float activeAccel = 0;  // steps/sec^2 for the currently running leg
+// Set by the stall recovery in loop(): drop that wheel's current speed
+// straight to its (lowered) target instead of slewing down to it.
+volatile bool leftSnapDown = false;
+volatile bool rightSnapDown = false;
 
-void stepTimerCallback(void* arg) {
-  float accelStep = activeAccel / TIMER_FREQ;
+static inline void stepWheel(hw_timer_t* timer, int pin, volatile bool& running,
+                             volatile long& position, volatile long& total,
+                             volatile uint32_t& intervalUs) {
+  uint32_t next = intervalUs;
+  if (running && next > 0 && position < total) {
+    gpio_set_level((gpio_num_t)pin, 1);
+    position++;
+    if (position >= total) running = false;
+    gpio_set_level((gpio_num_t)pin, 0);  // high time ~0.3us, TMC2209 needs 100ns
+  } else {
+    next = IDLE_POLL_US;
+  }
+  // Auto-reload already restarted the count at 0 when this alarm fired,
+  // so ISR latency doesn't stretch the interval.
+  timerAlarm(timer, next, true, 0);
+}
+
+void ARDUINO_ISR_ATTR leftStepISR() {
+  stepWheel(leftStepTimer, LEFT_STEP_PIN, leftRunning, leftPosition, leftTotalSteps, leftIntervalUs);
+}
+
+void ARDUINO_ISR_ATTR rightStepISR() {
+  stepWheel(rightStepTimer, RIGHT_STEP_PIN, rightRunning, rightPosition, rightTotalSteps, rightIntervalUs);
+}
+
+static inline uint32_t speedToIntervalUs(float speed, bool running) {
+  if (!running || speed <= 0) return 0;
+  return (uint32_t)(STEP_TIMER_HZ / max(speed, MIN_STEP_RATE));
+}
+
+void slewTimerCallback(void* arg) {
+  float accelStep = activeAccel / SLEW_FREQ;
 
   // Snapshot to plain floats: std::min/max on this ESP32 core need both
   // arguments to be the exact same type, and a `volatile float` doesn't
   // match a plain `float` for template deduction.
   float leftTarget = leftTargetSpeed;
   float rightTarget = rightTargetSpeed;
+
+  if (leftSnapDown) {
+    leftSnapDown = false;
+    if (leftCurrentSpeed > leftTarget) leftCurrentSpeed = leftTarget;
+  }
+  if (rightSnapDown) {
+    rightSnapDown = false;
+    if (rightCurrentSpeed > rightTarget) rightCurrentSpeed = rightTarget;
+  }
 
   if (leftCurrentSpeed < leftTarget)
     leftCurrentSpeed = min((float)(leftCurrentSpeed + accelStep), leftTarget);
@@ -239,33 +326,11 @@ void stepTimerCallback(void* arg) {
   else if (rightCurrentSpeed > rightTarget)
     rightCurrentSpeed = max((float)(rightCurrentSpeed - accelStep), rightTarget);
 
-  if (leftRunning && leftPosition < leftTotalSteps && leftCurrentSpeed > 0) {
-    leftCounter += leftCurrentSpeed / TIMER_FREQ;
-    if (leftCounter >= 1.0) {
-      leftCounter -= 1.0;
-      digitalWrite(LEFT_STEP_PIN, HIGH);
-      digitalWrite(LEFT_STEP_PIN, LOW);
-      leftPosition++;
-      if (leftPosition >= leftTotalSteps) {
-        leftRunning = false;
-        leftCurrentSpeed = 0;
-      }
-    }
-  }
+  if (!leftRunning) leftCurrentSpeed = 0;
+  if (!rightRunning) rightCurrentSpeed = 0;
 
-  if (rightRunning && rightPosition < rightTotalSteps && rightCurrentSpeed > 0) {
-    rightCounter += rightCurrentSpeed / TIMER_FREQ;
-    if (rightCounter >= 1.0) {
-      rightCounter -= 1.0;
-      digitalWrite(RIGHT_STEP_PIN, HIGH);
-      digitalWrite(RIGHT_STEP_PIN, LOW);
-      rightPosition++;
-      if (rightPosition >= rightTotalSteps) {
-        rightRunning = false;
-        rightCurrentSpeed = 0;
-      }
-    }
-  }
+  leftIntervalUs = speedToIntervalUs(leftCurrentSpeed, leftRunning);
+  rightIntervalUs = speedToIntervalUs(rightCurrentSpeed, rightRunning);
 }
 
 // Point both DIR pins forward or reverse. Motors must be stopped
@@ -279,14 +344,15 @@ void setDirection(bool forward) {
   delayMicroseconds(50);  // TMC2209 DIR setup time before the next STEP edge
 }
 
-// Arm the timer-driven motion for one leg (forward or reverse)
-void startLeg(long stepCap, float speed, float accel) {
+// Arm the timer-driven motion for one leg (forward or reverse). Starts at
+// MIN_SAFE_SPEED; loop() ramps the per-wheel targets up from there.
+void startLeg(long stepCap, float accel) {
   leftPosition = rightPosition = 0;
-  leftCounter = rightCounter = 0;
   leftCurrentSpeed = rightCurrentSpeed = 0;
+  leftSnapDown = rightSnapDown = false;
   leftTotalSteps = rightTotalSteps = stepCap;
-  leftTargetSpeed = rightTargetSpeed = speed;
-  activeAccel = accel;
+  leftTargetSpeed = rightTargetSpeed = MIN_SAFE_SPEED;
+  activeAccel = accel * WHEEL_SLEW_FACTOR;
   leftRunning = rightRunning = true;
 }
 
@@ -399,6 +465,45 @@ float trackLPct = 0, trackRPct = 0;
 float minTrackLPct = 100, minTrackRPct = 100;
 const long TRACK_MIN_STEPS = 400;  // skip the first few cm - too few steps to measure reliably
 
+// Stall recovery. A stepper pushed past its torque stalls and just buzzes
+// in place, and it won't pick back up until the commanded speed drops far
+// below where it stalled - which on a leg only happens at the ramp-down.
+// Every STALL_WINDOW_MS, each wheel's encoder travel is compared with the
+// steps it was sent; if either turned less than STALL_RATIO of that, the
+// leg's ramp restarts from STALL_RESTART_FRACTION of the stall speed and
+// the rest of the run is capped at STALL_CAP_FRACTION of it.
+const unsigned long STALL_WINDOW_MS = 100;
+const unsigned long STALL_HOLDOFF_MS = 400;  // let the motor re-sync before judging again
+const long STALL_MIN_STEPS = 80;             // windows with fewer steps (below ~800 st/s) are too short to judge
+const float STALL_RATIO = 0.5;
+const float STALL_RESTART_FRACTION = 0.3;
+const float STALL_CAP_FRACTION = 0.85;
+
+unsigned long rampStartMs = 0;  // ramp-up origin for the current leg; moved on a stall
+float rampFloorSpeed = 0;       // ramp-up starts from here (MIN_SAFE_SPEED, or the restart speed after a stall)
+float stallSpeedCap = 0;        // top speed allowed for the rest of the run; lowered by each stall
+int legStallCount = 0;
+unsigned long stallWinStartMs = 0;
+long stallWinStepsL = 0, stallWinStepsR = 0;
+double stallWinTicksL = 0, stallWinTicksR = 0;
+
+// Start a fresh stall window (and holdoff) from the current steps/encoders.
+void resetStallWindow(unsigned long startMs) {
+  stallWinStartMs = startMs;
+  stallWinStepsL = leftPosition;
+  stallWinStepsR = rightPosition;
+  stallWinTicksL = leftEnc.totalTicks;
+  stallWinTicksR = rightEnc.totalTicks;
+}
+
+// Per-leg ramp/stall bookkeeping. Call right after startLeg().
+void beginLegRamp() {
+  rampStartMs = millis();
+  rampFloorSpeed = MIN_SAFE_SPEED;
+  legStallCount = 0;
+  resetStallWindow(rampStartMs);
+}
+
 enum RunPhase { WAIT_BUTTON,
                 FORWARD,
                 PAUSE,
@@ -406,6 +511,10 @@ enum RunPhase { WAIT_BUTTON,
                 DONE };
 RunPhase phase = WAIT_BUTTON;
 bool lastRunFailed = false;  // set by finishRun() - drives the DONE-phase LED color
+
+// finishRun() reasons that count as a successful run
+const char* const RUN_DONE_FULL = "Reverse complete - at Target Point";
+const char* const RUN_DONE_FORWARD_ONLY = "Forward complete (forward-only mode)";
 
 const char* phaseName(RunPhase p);  // see the Encoder prototype note above - same reason
 
@@ -428,12 +537,13 @@ unsigned long lastBLESend = 0;
 
 void sendVehicleConfig() {
   if (!bleConnected || statusChar == nullptr) return;
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f
-  char buf[160];
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f
+  char buf[176];
   snprintf(buf, sizeof(buf),
-           "CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f",
+           "CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f",
            rt_FORWARD_DIST_M, rt_REVERSE_DIST_M, rt_FORWARD_TIME_S, rt_REVERSE_TIME_S,
-           rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX);
+           rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX,
+           rt_DIST_FACTOR);
   statusChar->setValue(String(buf));
   statusChar->notify();
 }
@@ -457,7 +567,9 @@ void startRunSequence() {
   legStartLeftTicks = leftEnc.totalTicks;
   legStartRightTicks = rightEnc.totalTicks;
 
-  startLeg(FORWARD_STEP_CAP, FORWARD_SPEED, FORWARD_ACCEL);
+  stallSpeedCap = MAX_SAFE_SPEED;
+  startLeg(FORWARD_STEP_CAP, FORWARD_ACCEL);
+  beginLegRamp();
   phase = FORWARD;
   Serial.println("[RUN] Forward leg starting...");
 
@@ -574,6 +686,31 @@ void handleCommand(const String& cmdIn) {
     return;
   }
 
+  if (upperCmd.startsWith("DIST_MEASURED:")) {
+    // Distance-factor counterpart of CALIBRATE: scales DIST_FACTOR by
+    // set forward distance / tape-measured distance of the last run.
+    // Leaves ticksPerMeter alone.
+    float measuredM = cmd.substring(14).toFloat();
+    if (measuredM > 30.0) measuredM /= 1000.0;
+    if (measuredM > 0.05 && rt_FORWARD_DIST_M > 0.05) {
+      float newFactor = rt_DIST_FACTOR * rt_FORWARD_DIST_M / measuredM;
+      if (newFactor < MIN_DIST_FACTOR || newFactor > MAX_DIST_FACTOR) {
+        if (bleConnected && statusChar != nullptr) {
+          statusChar->setValue(String("STATUS:Distance factor out of range - check the measurement"));
+          statusChar->notify();
+        }
+        return;
+      }
+      rt_DIST_FACTOR = newFactor;
+      saveFloatParam("dist_factor", rt_DIST_FACTOR);
+      recalcRoute();
+      Serial.print("[NVS] Distance factor: ");
+      Serial.println(rt_DIST_FACTOR, 4);
+      sendVehicleConfig();
+    }
+    return;
+  }
+
   // Key:Value setters
   int colon = cmd.indexOf(':');
   if (colon <= 0) return;
@@ -615,6 +752,10 @@ void handleCommand(const String& cmdIn) {
   } else if (key == "KX") {
     rt_KX = constrain(val, 0.0f, 200.0f);
     saveFloatParam("kx_xtrack", rt_KX);
+  } else if (key == "DIST_FACTOR") {
+    rt_DIST_FACTOR = constrain(val, MIN_DIST_FACTOR, MAX_DIST_FACTOR);
+    saveFloatParam("dist_factor", rt_DIST_FACTOR);
+    recalcRoute();
   } else if (key == "CAL") {
     if (val > 500.0 && val < 100000.0) saveCalibration(val);
   } else {
@@ -841,7 +982,10 @@ void sendBLEStatus(float distM, float targetM) {
   snprintf(buf, sizeof(buf),
            "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f",
            phaseName(phase), distM, targetM, speedMps, headingAngle, currentGyroRate_dps,
-           readRailVoltage(), leftEnc.totalTicks, rightEnc.totalTicks, motorsArmed ? 1 : 0,
+           readRailVoltage(),
+           LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks,
+           RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks,
+           motorsArmed ? 1 : 0,
            (phase == WAIT_BUTTON) ? 0UL : (phase == DONE) ? finishElapsedMs : (millis() - startTime),
            trackLPct, trackRPct, crossTrackM * 1000.0);
   statusChar->setValue(String(buf));
@@ -852,8 +996,8 @@ void sendBLEStatus(float distM, float targetM) {
 // the car ended up relative to the line. Goes to the dashboard log.
 void reportLegTracking(const char* leg) {
   char buf[100];
-  snprintf(buf, sizeof(buf), "STATUS:%s track min L:%.0f%% R:%.0f%% | offset %+.0fmm",
-           leg, minTrackLPct, minTrackRPct, crossTrackM * 1000.0);
+  snprintf(buf, sizeof(buf), "STATUS:%s track min L:%.0f%% R:%.0f%% | offset %+.0fmm | stalls %d",
+           leg, minTrackLPct, minTrackRPct, crossTrackM * 1000.0, legStallCount);
   Serial.println(buf + 7);
   if (bleConnected && statusChar != nullptr) {
     statusChar->setValue(String(buf));
@@ -869,7 +1013,7 @@ void finishRun(const char* reason) {
   armMotors(true);
   if (phase == FORWARD || phase == REVERSE) reportLegTracking(phase == FORWARD ? "FWD" : "REV");
 
-  lastRunFailed = (strcmp(reason, "Reverse complete - at Target Point") != 0);
+  lastRunFailed = (strcmp(reason, RUN_DONE_FULL) != 0 && strcmp(reason, RUN_DONE_FORWARD_ONLY) != 0);
   finishElapsedMs = (phase == WAIT_BUTTON) ? 0 : millis() - startTime;
 
   Serial.print("[RUN] Finished: ");
@@ -918,15 +1062,28 @@ void setup() {
   loadPreferences();
   recalcRoute();
 
-  const esp_timer_create_args_t stepTimerArgs = {
-    .callback = &stepTimerCallback,
+  const esp_timer_create_args_t slewTimerArgs = {
+    .callback = &slewTimerCallback,
     .arg = nullptr,
     .dispatch_method = ESP_TIMER_TASK,
-    .name = "step_timer"
+    .name = "speed_slew"
   };
-  esp_timer_create(&stepTimerArgs, &stepTimerHandle);
-  esp_timer_start_periodic(stepTimerHandle, 1000000 / TIMER_FREQ);
-  Serial.println("[2] esp_timer OK");
+  esp_timer_create(&slewTimerArgs, &slewTimerHandle);
+  esp_timer_start_periodic(slewTimerHandle, 1000000 / SLEW_FREQ);
+
+  // Created here in setup() so their interrupts land on core 1 - see the
+  // stepper engine comment.
+  leftStepTimer = timerBegin(STEP_TIMER_HZ);
+  rightStepTimer = timerBegin(STEP_TIMER_HZ);
+  if (leftStepTimer == nullptr || rightStepTimer == nullptr) {
+    Serial.println("[2] STEP TIMER FAILED - motors will not run");
+  } else {
+    timerAttachInterrupt(leftStepTimer, &leftStepISR);
+    timerAttachInterrupt(rightStepTimer, &rightStepISR);
+    timerAlarm(leftStepTimer, IDLE_POLL_US, true, 0);
+    timerAlarm(rightStepTimer, IDLE_POLL_US, true, 0);
+    Serial.println("[2] Step timers OK");
+  }
 
   Wire.begin(IMU_SDA_PIN, IMU_SCL_PIN);
   Wire.setClock(100000);
@@ -966,6 +1123,7 @@ void setup() {
     Serial.println("    Flip WL_SW on to bring up BLE (checked every loop, no reset needed).");
   }
   Serial.println("---");
+  if (FORWARD_ONLY) Serial.println("FORWARD_ONLY mode: runs stop after the forward leg (no reverse).");
   Serial.println("Press the button, or send START over BLE, to begin.");
 }
 
@@ -1046,7 +1204,8 @@ void loop() {
       legStartRightTicks = rightEnc.totalTicks;
       lastLegDistM = 0.0;  // leg distance restarts from 0; crossTrackM deliberately carries over
       minTrackLPct = minTrackRPct = 100;
-      startLeg(REVERSE_STEP_CAP, REVERSE_SPEED, REVERSE_ACCEL);
+      startLeg(REVERSE_STEP_CAP, REVERSE_ACCEL);
+      beginLegRamp();  // stallSpeedCap deliberately carries over from the forward leg
       phase = REVERSE;
       Serial.println("[RUN] Reverse leg starting...");
       if (bleConnected) {
@@ -1059,8 +1218,11 @@ void loop() {
     float baseSpeed = isForward ? FORWARD_SPEED : REVERSE_SPEED;
     float accelRate = isForward ? FORWARD_ACCEL : REVERSE_ACCEL;
     float bias = isForward ? rt_FORWARD_BIAS : rt_REVERSE_BIAS;
-    float targetM = isForward ? rt_FORWARD_DIST_M : rt_REVERSE_DIST_M;
-    curTargetM = targetM;
+    // targetM is encoder distance (set distance x DIST_FACTOR); the
+    // dashboard gets the set distance and the factor-corrected distance.
+    float setDistM = isForward ? rt_FORWARD_DIST_M : rt_REVERSE_DIST_M;
+    float targetM = setDistM * rt_DIST_FACTOR;
+    curTargetM = setDistM;
 
     // Encoder-measured distance for this leg - the authoritative stop
     // signal, computed before the speed target below since the decel
@@ -1070,20 +1232,69 @@ void loop() {
     float leftLegM = (float)(dLeftTicks / ticksPerMeter);
     float rightLegM = (float)(dRightTicks / ticksPerMeter);
     float avgLegM = (leftLegM + rightLegM) / 2.0;
-    curDistM = avgLegM;
+    curDistM = avgLegM / rt_DIST_FACTOR;
+
+    // Stall check - see STALL_WINDOW_MS. millis() rather than `now`
+    // throughout: a BLE START can set the leg's start times after `now`
+    // was sampled, which would underflow.
+    const float ticksPerStep = AS5600_TICKS_PER_REV / (STEPS_PER_REV * MICROSTEP);
+    bool snapL = false, snapR = false;
+    long sinceWinMs = (long)(millis() - stallWinStartMs);
+    if (sinceWinMs < 0) {
+      // Holdoff after a stall: keep re-basing so the next window starts
+      // when the holdoff ends.
+      resetStallWindow(stallWinStartMs);
+    } else if (sinceWinMs >= (long)STALL_WINDOW_MS) {
+      long winStepsL = leftPosition - stallWinStepsL;
+      long winStepsR = rightPosition - stallWinStepsR;
+      double winTicksL = fabs(leftEnc.totalTicks - stallWinTicksL);
+      double winTicksR = fabs(rightEnc.totalTicks - stallWinTicksR);
+      bool stalledL = winStepsL >= STALL_MIN_STEPS && winTicksL < STALL_RATIO * winStepsL * ticksPerStep;
+      bool stalledR = winStepsR >= STALL_MIN_STEPS && winTicksR < STALL_RATIO * winStepsR * ticksPerStep;
+      if (stalledL || stalledR) {
+        float stallSpeed = max((float)leftCurrentSpeed, (float)rightCurrentSpeed);
+        stallSpeedCap = max(min(stallSpeedCap, stallSpeed * STALL_CAP_FRACTION), MIN_SAFE_SPEED);
+        rampFloorSpeed = max(stallSpeed * STALL_RESTART_FRACTION, MIN_SAFE_SPEED);
+        rampStartMs = millis();
+        legStallCount++;
+        resetStallWindow(millis() + STALL_HOLDOFF_MS);  // window starts after the holdoff
+
+        char buf[80];
+        snprintf(buf, sizeof(buf), "STATUS:STALL %s%s at %.0f st/s - top speed now %.0f st/s",
+                 stalledL ? "L" : "", stalledR ? "R" : "", stallSpeed, stallSpeedCap);
+        Serial.println(buf + 7);
+        if (bleConnected && statusChar != nullptr) {
+          statusChar->setValue(String(buf));
+          statusChar->notify();
+          lastBLESend = millis();  // hold off this pass's telemetry so it doesn't overwrite the alert
+        }
+        snapL = stalledL;
+        snapR = stalledR;
+      } else {
+        resetStallWindow(millis());
+      }
+    }
+
+    float topSpeed = min(baseSpeed, stallSpeedCap);
 
     // Ramp down over the last stretch of distance, symmetric with the
-    // ramp-up: using the same accel rate, decelerating from baseSpeed
+    // ramp-up: using the same accel rate, decelerating from topSpeed
     // to 0 takes decelDistM of travel (v^2 = 2*a*d).
     float accelMps2 = accelRate / STEPS_PER_METER;
-    float baseSpeedMps = baseSpeed / STEPS_PER_METER;
-    float decelDistM = (baseSpeedMps * baseSpeedMps) / (2.0 * accelMps2);
+    float topSpeedMps = topSpeed / STEPS_PER_METER;
+    float decelDistM = (topSpeedMps * topSpeedMps) / (2.0 * accelMps2);
     float remainingM = targetM - avgLegM;
 
-    float rampedSpeed = baseSpeed;
+    // Ramp up by time since the leg started (or since the last stall).
+    // Done here rather than in the slew timer so the per-wheel correction
+    // below applies from the first step - see WHEEL_SLEW_FACTOR.
+    float rampElapsedS = (millis() - rampStartMs) / 1000.0;
+    float rampedSpeed = constrain(rampFloorSpeed + accelRate * rampElapsedS, MIN_SAFE_SPEED, topSpeed);
     if (remainingM > 0 && remainingM < decelDistM) {
+      // min(): on a short leg the ramp-down can begin before the ramp-up
+      // has finished - never jump up to meet the ramp-down curve.
       float rampedSpeedMps = sqrt(2.0 * accelMps2 * remainingM);
-      rampedSpeed = max(rampedSpeedMps * STEPS_PER_METER, MIN_SAFE_SPEED);
+      rampedSpeed = min(rampedSpeed, max(rampedSpeedMps * STEPS_PER_METER, MIN_SAFE_SPEED));
     }
 
     // Reversing direction flips which wheel must speed up to correct
@@ -1108,13 +1319,19 @@ void loop() {
     leftTargetSpeed = constrain(leftSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
     rightTargetSpeed = constrain(rightSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
 
+    // A stalled wheel isn't turning anyway, so drop its command straight
+    // to the restart speed - slewing down would leave it buzzing longer.
+    // The wheel that's still turning slews down normally. Set only after
+    // the new targets above, since the slew timer runs on the other core.
+    if (snapL) leftSnapDown = true;
+    if (snapR) rightSnapDown = true;
+
     // Wheel tracking: encoder rotation vs commanded steps, per wheel.
     // ~100% = the wheel shaft turned as far as it was stepped. A wheel
     // well under the other one (esp. early in a leg, while accelerating)
     // is skipping steps or slipping between motor and wheel (hub/coupler).
     // Both read a little under 100% because steps are sampled slightly
     // after the encoders - compare left vs right, not against 100%.
-    const float ticksPerStep = AS5600_TICKS_PER_REV / (STEPS_PER_REV * MICROSTEP);
     long sL = leftPosition, sR = rightPosition;
     if (sL >= TRACK_MIN_STEPS) {
       trackLPct = dLeftTicks / (sL * ticksPerStep) * 100.0;
@@ -1160,7 +1377,9 @@ void loop() {
     // run past its target time and still finish on distance.
     if (avgLegM >= targetM) {
       stopMotors();
-      if (isForward) {
+      if (isForward && FORWARD_ONLY) {
+        finishRun(RUN_DONE_FORWARD_ONLY);
+      } else if (isForward) {
         pauseStartTime = millis();
         phase = PAUSE;
         Serial.println("[RUN] Forward leg complete. Pausing before reverse...");
@@ -1170,7 +1389,7 @@ void loop() {
           statusChar->notify();
         }
       } else {
-        finishRun("Reverse complete - at Target Point");
+        finishRun(RUN_DONE_FULL);
       }
     } else if (!leftRunning && !rightRunning) {
       finishRun(isForward ? "Forward step cap reached without encoder confirmation"
