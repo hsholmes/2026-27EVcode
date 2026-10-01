@@ -67,7 +67,7 @@ live testing:
 - Trapezoidal profile (ramp-up over `ACCEL_TIME_SEC`, **distance-based ramp-down** from encoder remaining distance). Speed = steps / (time − ACCEL_TIME_SEC), clamped 80–4500 st/s.
 - **Both ramps are computed in `loop()`** (see "Ramp-up fix" below). Ramp-up = `accelRate × (millis() − startTime)`, clamped between `MIN_SAFE_SPEED` and cruise; ramp-down = `sqrt(2·a·remaining)`, and the smaller of the two wins so a short leg never jumps up to meet the ramp-down curve. `startLeg(stepCap, accel)` starts both wheels at `MIN_SAFE_SPEED`; the ISR's per-wheel slew runs at `WHEEL_SLEW_FACTOR` (4×) the leg accel and only smooths between loop passes.
 - **Stop = encoder distance reached.** Only fallback is the step cap (1.3× nominal steps). **The time-limit stop was removed on request** — Time F/R now only set cruise speed.
-- Steering: P-only on heading, plus **cross-track correction** — sideways offset integrated from encoder travel × sin(heading); target heading = −dirSign × KX × offset, capped ±5°. Offset carries across both legs. Heading and elapsed time freeze in DONE.
+- Steering: P-only on heading, **cross-track correction** (sideways offset integrated from encoder travel × sin(heading); target heading = −dirSign × KX × offset, capped ±5°), plus **closed-loop encoder differential trim (2026-10-01)**: balances small tick errors (~100–1000 ticks) by nudging wheel speeds by `rt_KP_ENC` (default 0.2 st/s per tick difference, clamped to ±150 st/s). When the gyro is actively steering to correct heading error, opposing encoder trim is attenuated by 90% so it never fights turns. Heading and elapsed time freeze in DONE.
 - Motors stay armed in DONE (holding torque). Params persist in NVS (`Preferences`, namespace `scioly_ev`).
 - Compile gotchas already handled (keep them if refactoring): explicit prototypes after `struct Encoder` / `enum RunPhase` (Arduino auto-prototype bug); BLE uses Arduino `String`, not `std::string`, on core 3.3.x; `min/max` need plain-float snapshots of volatiles. Needs the Adafruit NeoPixel library.
 
@@ -75,9 +75,11 @@ live testing:
 
 Commands: `START`, `STOP`, `RESET`, `ARM`, `DISARM`, `GET_CONFIG`,
 `CAL_START`, `CAL_FINISH:<m>`, `CAL:<ticks/m>`, `CALIBRATE:<measured m>`,
-and setters `DIST_F/DIST_R` (m), `TIME_F/TIME_R` (s), `KP`, `KX`,
+and setters `DIST_F/DIST_R` (m), `TIME_F/TIME_R` (s), `KP`, `KX`, `KP_ENC` (or `KE`),
 `BIAS_F/BIAS_R` (raw st/s, + steers right), `PAUSE` (ms),
 `DIST_FACTOR:<x>` (0.5–1.5) and `DIST_MEASURED:<m>` (factor ×= DIST_F ÷ measured).
+
+**Encoder trim (2026-10-01):** `rt_KP_ENC` (default 0.2 st/s per tick diff, NVS key `kp_enc`). Set via `KP_ENC:<val>` or `KE:<val>`. Dashboard has a KE field in the parameter grid.
 
 **Distance factor (2026-09-30):** separate from ticks/m. Each leg stops at
 set distance × factor of encoder distance; step caps/speeds use the scaled
@@ -86,13 +88,16 @@ distance, so the dashboard shows real-world distance. NVS key `dist_factor`.
 Dashboard has its own "Distance Factor" card (Factor + Measured Run Distance).
 
 Telemetry (10 Hz, all phases):
-`P: D: T: V: H: G: B: L: R: M: E: WL: WR: X:` — WL/WR = per-wheel tracking %
+`P: D: T: V: H: G: B: L: R: CL: CR: M: E: WL: WR: X:` — CL/CR = live motor
+speed multipliers vs ramped cruise speed, WL/WR = per-wheel tracking %
 (encoder rotation ÷ commanded steps), X = cross-track mm (+ = left).
-Config readback: `CFG:DF DR TF TR KP BF BR P C KX DK` (DK = distance factor).
-At each leg end the car sends `STATUS:<FWD|REV> track min L:x% R:y% | offset ±Nmm`.
+Config readback: `CFG:DF DR TF TR KP BF BR P C KX DK KE` (KE = encoder trim gain).
+At each leg end the car sends `STATUS:<FWD|REV> track min L:x% R:y% | Δticks ±N | offset ±Nmm | stalls N`.
 
 ## Dashboard changes made
 
+- KE (Encoder Trim) input field added to the parameter grid, with live NVS sync and Send All inclusion.
+- Live motor compensation `CL:` and `CR:` telemetry parsed and displayed in the "Live Motor Compensation" card.
 - Drift label and compass needle flipped to match the gyro sign.
 - KX field added; bias fields relabeled "st/s (+ steers R)".
 - **Upload bug fixed:** every setter makes the car echo its whole config, which used to overwrite not-yet-sent fields, so Sync All / Reset & Arm only really sent the first value. Edited fields are now tracked as dirty and protected until sent. Verified with a mock car in the browser.
@@ -131,21 +136,21 @@ it persists, continue with the hardware checks.
 
 ## Open issue — where to pick up
 
-**The car veers right at the start of both the forward and the reverse leg**, then recovers heading but stays offset. Same-side drift on both legs pointed to the **right wheel lagging during acceleration** (hub/coupler slipping, weak U4 driver current/Vref, drop damage to the right motor, or right-tire traction) — but see the ramp-up fix above, which may account for some or all of it.
+**Lateral translation / offset to the left after launch**:
+The user observed that encoder corrections successfully balance the wheels (within 20 ticks), and the vehicle heading angle straightens out parallel to the track, but the car ends up translated (shifted) slightly to the left of the start axis on every run.
 
-Waiting on the user to run it with the ramp-up fix build and report whether the veer changed, plus the dashboard log's `track min` lines:
-- right track % clearly below left → right motor/hub/driver losing motion (hardware);
-- both similar but still drifting → wheel slipping on the floor, traction or wheel diameter.
+**Root causes & fixes (2026-10-01):**
+1. **Launch angle kick & slow heading response**: When accelerating from a stop, any slight initial angle error causes the car to travel diagonally for the first second. With `rt_KP_HEADING = 12.0`, heading correction was too sluggish. Boosted default to `rt_KP_HEADING = 28.0` so heading snaps straight within centimeters.
+2. **Weak cross-track recovery**: With `rt_KX = 20.0`, a 30 mm lateral shift commanded only a 0.6° target heading back to the line, requiring over 10 seconds of travel to eliminate. Boosted default to `rt_KX = 50.0` so the car actively crabs back onto the original center line.
+3. **Start-line gyro thermal drift**: The MPU-6050 was only calibrated once in `setup()` at cold boot; sitting on the line for 1–2 minutes introduced a 0.2–0.5 dps thermal bias. Added an automatic 40-sample stationary gyro re-zero in `startRunSequence()` right before the motors step.
+4. **Steering bias defaults**: Changed firmware and dashboard defaults for `rt_FORWARD_BIAS` and `rt_REVERSE_BIAS` from `10.0` to `0.0`.
 
-Suggested physical checks already given: compare hand-turn resistance of both wheels when armed, compare Vref on U3 vs U4, compare motor coil resistance, check the right hub set screw.
-
-Separate code-review bugs are tracked in [`PushReverseStepper/KNOWN_ISSUES.md`](PushReverseStepper/KNOWN_ISSUES.md) — read it before touching `loop()` or the BLE callbacks.
-
-Also pending/untested: KX default 20 (lower if it weaves, raise if slow to return); user was told to set BIAS_F/BIAS_R to 0 (defaults of 10 steer right).
+User action items:
+- Flash latest firmware.
+- In dashboard, verify `KP Heading = 28.0`, `KX Cross-Track = 50.0`, `Forward Bias = 0.0`, and `KE = 0.20`. Click **SEND ALL** or **RESET & ARM**.
+- Observe if the car now tracks down the center line and recovers from any initial launch twitch.
 
 ## Not ported from `CurveRouteStepper.ino` (deliberately)
 
-PD gyro control (KD), closed-loop encoder-differential trim, dynamic
-pacing speed-boost, stepper-coil audio tones. If the right-wheel lag
-turns out to be real, the encoder-differential trim there is the obvious
-software mitigation to consider — ask the user first.
+PD gyro control (KD term), dynamic pacing speed-boost, stepper-coil audio tones.
+(Note: Closed-loop encoder differential trim was ported on 2026-10-01 per user request).

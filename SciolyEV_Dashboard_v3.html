@@ -1006,7 +1006,7 @@
               <span class="param-sub">Gyro Correction</span>
             </div>
             <div class="input-row">
-              <input type="number" id="inpKp" value="12.0" step="0.5" min="0" max="50">
+              <input type="number" id="inpKp" value="28.0" step="0.5" min="0" max="100">
               <button class="btn-send-mini mono" id="btnKp" onclick="sendParam('KP', 'inpKp', 'btnKp')" disabled>SEND</button>
             </div>
           </div>
@@ -1018,8 +1018,20 @@
               <span class="param-sub">° per m off line</span>
             </div>
             <div class="input-row">
-              <input type="number" id="inpKx" value="20.0" step="1.0" min="0" max="200">
+              <input type="number" id="inpKx" value="50.0" step="1.0" min="0" max="200">
               <button class="btn-send-mini mono" id="btnKx" onclick="sendParam('KX', 'inpKx', 'btnKx')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- KE Encoder Differential Balance -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">KE Encoder Trim</span>
+              <span class="param-sub">st/s per tick diff</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpKe" value="0.20" step="0.05" min="0" max="5.0">
+              <button class="btn-send-mini mono" id="btnKe" onclick="sendParam('KP_ENC', 'inpKe', 'btnKe')" disabled>SEND</button>
             </div>
           </div>
 
@@ -1030,7 +1042,7 @@
               <span class="param-sub">st/s (+ steers R)</span>
             </div>
             <div class="input-row">
-              <input type="number" id="inpFwdBias" value="10.0" step="1.0" min="-50" max="50">
+              <input type="number" id="inpFwdBias" value="0.0" step="1.0" min="-50" max="50">
               <button class="btn-send-mini mono" id="btnFwdBias" onclick="sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias')" disabled>SEND</button>
             </div>
           </div>
@@ -1066,7 +1078,7 @@
               <span class="param-sub">st/s (+ steers R)</span>
             </div>
             <div class="input-row">
-              <input type="number" id="inpRevBias" value="10.0" step="1.0" min="-50" max="50">
+              <input type="number" id="inpRevBias" value="0.0" step="1.0" min="-50" max="50">
               <button class="btn-send-mini mono" id="btnRevBias" onclick="sendParam('BIAS_R', 'inpRevBias', 'btnRevBias')" disabled>SEND</button>
             </div>
           </div>
@@ -1359,7 +1371,7 @@ function setConnectionState(state, label) {
 function setControlsEnabled(enable) {
   const ids = [
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
-    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnKx', 'btnFwdBias',
+    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
     'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured'
   ];
@@ -1595,6 +1607,8 @@ function parseConfigPacket(cfgStr) {
       setFromConfig('inpKp', fVal.toFixed(1));
     } else if (k === 'KX') {
       setFromConfig('inpKx', fVal.toFixed(1));
+    } else if (k === 'KE') {
+      setFromConfig('inpKe', fVal.toFixed(2));
     } else if (k === 'DK') {
       setFromConfig('inpDistFactor', fVal.toFixed(4));
       document.getElementById('lblDistFactor').textContent = `Current: ×${fVal.toFixed(4)}`;
@@ -1750,6 +1764,7 @@ async function sendAllParameters() {
   await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap();
   await sendParam('KP',     'inpKp',      'btnKp');      await gap();
   await sendParam('KX',     'inpKx',      'btnKx');      await gap();
+  await sendParam('KP_ENC', 'inpKe',      'btnKe');      await gap();
   await sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias'); await gap();
   await sendParam('DIST_R', 'inpRevDist', 'btnRevDist'); await gap();
   await sendParam('TIME_R', 'inpRevTime', 'btnRevTime'); await gap();

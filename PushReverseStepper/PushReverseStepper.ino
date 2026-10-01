@@ -124,20 +124,26 @@ const float WHEEL_SLEW_FACTOR = 4.0;
 // Persisted to NVS (Preferences) under the "scioly_ev" namespace.
 // ============================================================
 Preferences prefs;
-volatile float rt_KP_HEADING = 12.0;
-volatile float rt_FORWARD_BIAS = 10.0;
-volatile float rt_REVERSE_BIAS = 10.0;
+volatile float rt_KP_HEADING = 28.0;
+volatile float rt_FORWARD_BIAS = 0.0;
+volatile float rt_REVERSE_BIAS = 0.0;
 volatile float rt_FORWARD_DIST_M = 1.000;
 volatile float rt_REVERSE_DIST_M = 1.000;
 volatile float rt_FORWARD_TIME_S = 10.0;
 volatile float rt_REVERSE_TIME_S = 10.0;
 volatile unsigned long rt_PAUSE_MS = 500;
 // Cross-track gain: degrees of heading target per meter of sideways
-// offset from the line. Not on the dashboard - set with KX:<val> over
-// Serial or BLE.
-volatile float rt_KX = 20.0;
+// offset from the line. Set with KX:<val> over Serial or BLE.
+volatile float rt_KX = 50.0;
 const float MAX_XT_HEADING_DEG = 5.0;  // cap on how hard it aims back at the line
 float ticksPerMeter = DEFAULT_TICKS_PER_METER;
+
+// Encoder differential balance trim: steps/sec of speed trim per tick of
+// difference between left and right wheel encoder travel. A light push
+// (default 0.2 st/s per tick) balances wheel slip/drag (~100-1000 ticks)
+// without fighting gyro turns. Set with KP_ENC:<val> or KE:<val>.
+volatile float rt_KP_ENC = 0.2;
+const float MAX_ENC_CORR = 150.0;  // cap on encoder speed trim (st/s)
 
 // Distance tuning factor, separate from the encoder calibration: each leg
 // stops at (set distance x this) of encoder distance. Absorbs whatever the
@@ -160,6 +166,7 @@ void loadPreferences() {
   rt_PAUSE_MS = (unsigned long)prefs.getFloat("pause_ms", (float)rt_PAUSE_MS);
   ticksPerMeter = prefs.getFloat("ticks_per_m", ticksPerMeter);
   rt_KX = prefs.getFloat("kx_xtrack", rt_KX);
+  rt_KP_ENC = prefs.getFloat("kp_enc", rt_KP_ENC);
   rt_DIST_FACTOR = constrain(prefs.getFloat("dist_factor", rt_DIST_FACTOR), MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   prefs.end();
 }
@@ -517,6 +524,9 @@ const char* const RUN_DONE_FULL = "Reverse complete - at Target Point";
 const char* const RUN_DONE_FORWARD_ONLY = "Forward complete (forward-only mode)";
 
 const char* phaseName(RunPhase p);  // see the Encoder prototype note above - same reason
+void reportLegTracking(const char* leg, double diffTicks = 0.0);
+void finishRun(const char* reason, double diffTicks = 0.0);
+void sendBLEStatus(float distM, float targetM, float compLeft = 1.0, float compRight = 1.0);
 
 // ============================================================
 // BLE Setup (ESP32 built-in BLEDevice stack)
@@ -537,13 +547,13 @@ unsigned long lastBLESend = 0;
 
 void sendVehicleConfig() {
   if (!bleConnected || statusChar == nullptr) return;
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f
-  char buf[176];
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f
+  char buf[200];
   snprintf(buf, sizeof(buf),
-           "CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f",
+           "CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f",
            rt_FORWARD_DIST_M, rt_REVERSE_DIST_M, rt_FORWARD_TIME_S, rt_REVERSE_TIME_S,
            rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX,
-           rt_DIST_FACTOR);
+           rt_DIST_FACTOR, rt_KP_ENC);
   statusChar->setValue(String(buf));
   statusChar->notify();
 }
@@ -552,6 +562,26 @@ void sendVehicleConfig() {
 // START command. Guarded so it only fires from an idle/finished state.
 void startRunSequence() {
   if (phase != WAIT_BUTTON && phase != DONE) return;
+
+  // Quick stationary gyro re-zero right on the line before motion starts.
+  // Eliminates thermal bias drift that accumulated while waiting for the start button.
+  if (hasImu) {
+    long zSum = 0;
+    int samples = 0;
+    for (int i = 0; i < 40; i++) {
+      int16_t raw = mpuReadGyroZ();
+      if (raw != INT16_MIN) {
+        zSum += raw;
+        samples++;
+      }
+      delay(3);
+    }
+    if (samples >= 25) {
+      gyroZ_offset = (float)zSum / (float)samples;
+      Serial.print("[IMU] Start-line gyro offset refreshed: ");
+      Serial.println(gyroZ_offset, 2);
+    }
+  }
 
   headingAngle = 0.0;
   crossTrackM = 0.0;
@@ -752,6 +782,11 @@ void handleCommand(const String& cmdIn) {
   } else if (key == "KX") {
     rt_KX = constrain(val, 0.0f, 200.0f);
     saveFloatParam("kx_xtrack", rt_KX);
+  } else if (key == "KP_ENC" || key == "KE") {
+    rt_KP_ENC = constrain(val, 0.0f, 5.0f);
+    saveFloatParam("kp_enc", rt_KP_ENC);
+    Serial.print("[NVS] Encoder balance gain (KE): ");
+    Serial.println(rt_KP_ENC, 3);
   } else if (key == "DIST_FACTOR") {
     rt_DIST_FACTOR = constrain(val, MIN_DIST_FACTOR, MAX_DIST_FACTOR);
     saveFloatParam("dist_factor", rt_DIST_FACTOR);
@@ -969,22 +1004,23 @@ const char* phaseName(RunPhase p) {
 // (including idle) so the dashboard's live chart and readouts keep
 // moving even before a run starts.
 // Format: P:<phase> D:<m> T:<m> V:<m/s> H:<deg> G:<dps> B:<V> L:<ticks>
-//         R:<ticks> M:<armed 0/1> E:<leg elapsed ms>
+//         R:<ticks> CL:<left mult> CR:<right mult> M:<armed 0/1> E:<leg elapsed ms>
 //         WL:<left track %> WR:<right track %> X:<cross-track mm>
-void sendBLEStatus(float distM, float targetM) {
+void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) {
   if (!bleConnected || statusChar == nullptr) return;
   if (millis() - lastBLESend < 100) return;
   lastBLESend = millis();
 
   float speedMps = ((leftCurrentSpeed + rightCurrentSpeed) / 2.0) / STEPS_PER_METER;
 
-  char buf[200];
+  char buf[230];
   snprintf(buf, sizeof(buf),
-           "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f",
+           "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f CL:%.3f CR:%.3f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f",
            phaseName(phase), distM, targetM, speedMps, headingAngle, currentGyroRate_dps,
            readRailVoltage(),
            LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks,
            RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks,
+           compLeft, compRight,
            motorsArmed ? 1 : 0,
            (phase == WAIT_BUTTON) ? 0UL : (phase == DONE) ? finishElapsedMs : (millis() - startTime),
            trackLPct, trackRPct, crossTrackM * 1000.0);
@@ -993,11 +1029,11 @@ void sendBLEStatus(float distM, float targetM) {
 }
 
 // Leg-end summary: lowest wheel tracking seen during the leg, plus where
-// the car ended up relative to the line. Goes to the dashboard log.
-void reportLegTracking(const char* leg) {
-  char buf[100];
-  snprintf(buf, sizeof(buf), "STATUS:%s track min L:%.0f%% R:%.0f%% | offset %+.0fmm | stalls %d",
-           leg, minTrackLPct, minTrackRPct, crossTrackM * 1000.0, legStallCount);
+// the car ended up relative to the line and final wheel tick difference.
+void reportLegTracking(const char* leg, double diffTicks) {
+  char buf[120];
+  snprintf(buf, sizeof(buf), "STATUS:%s track min L:%.0f%% R:%.0f%% | Δticks %+.0f | offset %+.0fmm | stalls %d",
+           leg, minTrackLPct, minTrackRPct, diffTicks, crossTrackM * 1000.0, legStallCount);
   Serial.println(buf + 7);
   if (bleConnected && statusChar != nullptr) {
     statusChar->setValue(String(buf));
@@ -1008,10 +1044,10 @@ void reportLegTracking(const char* leg) {
 
 // Stop everything and report. Motors stay armed (holding torque, so the
 // vehicle holds position at the Target Point) - use DISARM to free-wheel.
-void finishRun(const char* reason) {
+void finishRun(const char* reason, double diffTicks) {
   stopMotors();
   armMotors(true);
-  if (phase == FORWARD || phase == REVERSE) reportLegTracking(phase == FORWARD ? "FWD" : "REV");
+  if (phase == FORWARD || phase == REVERSE) reportLegTracking(phase == FORWARD ? "FWD" : "REV", diffTicks);
 
   lastRunFailed = (strcmp(reason, RUN_DONE_FULL) != 0 && strcmp(reason, RUN_DONE_FORWARD_ONLY) != 0);
   finishElapsedMs = (phase == WAIT_BUTTON) ? 0 : millis() - startTime;
@@ -1183,14 +1219,16 @@ void loop() {
 
   float curDistM = 0.0;
   float curTargetM = rt_FORWARD_DIST_M;
+  float liveCompLeft = 1.0;
+  float liveCompRight = 1.0;
 
   if (phase == WAIT_BUTTON) {
     if (digitalRead(BUTTON_PIN) == LOW) {
       delay(50);
       if (digitalRead(BUTTON_PIN) == LOW) {
         startRunSequence();
-        while (digitalRead(BUTTON_PIN) == LOW)
-          ;
+        // Non-blocking: loop() transitions immediately to FORWARD so heading
+        // and encoder control are active even if the button is held down.
       }
     }
   } else if (phase == PAUSE) {
@@ -1313,11 +1351,30 @@ void loop() {
     float headingError = headingAngle - targetHeading;
     float kpCorrection = hasImu ? dirSign * rt_KP_HEADING * headingError : 0.0;
 
-    float leftSpd = rampedSpeed + kpCorrection + dirSign * bias;
-    float rightSpd = rampedSpeed - kpCorrection - dirSign * bias;
+    // Encoder differential balance trim:
+    // dLeftTicks and dRightTicks are positive magnitudes of travel on this leg.
+    // diffTicks > 0 means left wheel has turned more ticks than right wheel.
+    // To balance them, left must slow down (-) and right must speed up (+).
+    double diffTicks = dLeftTicks - dRightTicks;
+    float encCorr = -rt_KP_ENC * (float)diffTicks;
+    encCorr = constrain(encCorr, -MAX_ENC_CORR, MAX_ENC_CORR);
+
+    // If gyro is actively steering the car to correct heading error, do not
+    // let encoder balance trim fight the turn required to realign the vehicle.
+    if (hasImu && fabs(headingError) > 0.20f) {
+      if ((kpCorrection > 0.0f && encCorr < 0.0f) || (kpCorrection < 0.0f && encCorr > 0.0f)) {
+        encCorr *= 0.10f; // Attenuate opposing trim by 90%
+      }
+    }
+
+    float leftSpd = rampedSpeed + kpCorrection + dirSign * bias + encCorr;
+    float rightSpd = rampedSpeed - kpCorrection - dirSign * bias - encCorr;
 
     leftTargetSpeed = constrain(leftSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
     rightTargetSpeed = constrain(rightSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
+
+    liveCompLeft = (rampedSpeed > 1.0) ? (leftTargetSpeed / rampedSpeed) : 1.0;
+    liveCompRight = (rampedSpeed > 1.0) ? (rightTargetSpeed / rampedSpeed) : 1.0;
 
     // A stalled wheel isn't turning anyway, so drop its command straight
     // to the restart speed - slewing down would leave it buzzing longer.
@@ -1350,6 +1407,10 @@ void loop() {
       Serial.print(headingAngle, 1);
       Serial.print(" Corr:");
       Serial.print(kpCorrection, 1);
+      Serial.print(" EncCorr:");
+      Serial.print(encCorr, 1);
+      Serial.print(" Δticks:");
+      Serial.print(diffTicks, 0);
       Serial.print(" XT:");
       Serial.print(crossTrackM * 1000.0, 0);
       Serial.print("mm Dist:");
@@ -1378,25 +1439,25 @@ void loop() {
     if (avgLegM >= targetM) {
       stopMotors();
       if (isForward && FORWARD_ONLY) {
-        finishRun(RUN_DONE_FORWARD_ONLY);
+        finishRun(RUN_DONE_FORWARD_ONLY, diffTicks);
       } else if (isForward) {
         pauseStartTime = millis();
         phase = PAUSE;
         Serial.println("[RUN] Forward leg complete. Pausing before reverse...");
-        reportLegTracking("FWD");
+        reportLegTracking("FWD", diffTicks);
         if (bleConnected) {
           statusChar->setValue(String("STATUS:Forward done, pausing"));
           statusChar->notify();
         }
       } else {
-        finishRun(RUN_DONE_FULL);
+        finishRun(RUN_DONE_FULL, diffTicks);
       }
     } else if (!leftRunning && !rightRunning) {
       finishRun(isForward ? "Forward step cap reached without encoder confirmation"
-                           : "Reverse step cap reached without encoder confirmation");
+                           : "Reverse step cap reached without encoder confirmation", diffTicks);
     }
   }
 
   // Continuous telemetry stream, active in every phase including idle.
-  sendBLEStatus(curDistM, curTargetM);
+  sendBLEStatus(curDistM, curTargetM, liveCompLeft, liveCompRight);
 }
