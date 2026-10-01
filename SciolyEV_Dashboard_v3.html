@@ -1086,6 +1086,44 @@
         </div>
       </div>
 
+      <!-- Distance Factor (separate from encoder calibration) -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Distance Factor</span>
+          <span class="card-subtitle mono" id="lblDistFactor">Current: ×1.0000</span>
+        </div>
+
+        <div class="cal-card">
+          <div class="cal-banner">
+            Each leg stops at set distance × factor. Does not change the encoder calibration. After a forward run, tape-measure how far the car actually went and press COMPUTE; the factor is scaled by Forward Distance ÷ measured.
+          </div>
+
+          <div class="param-grid">
+            <div class="param-field">
+              <div class="param-label-row">
+                <span class="param-title">Factor</span>
+                <span class="param-sub">× set distance (0.5–1.5)</span>
+              </div>
+              <div class="input-row">
+                <input type="number" id="inpDistFactor" value="1.0000" step="0.001" min="0.5" max="1.5">
+                <button class="btn-send-mini mono" id="btnDistFactor" onclick="sendParam('DIST_FACTOR', 'inpDistFactor', 'btnDistFactor')" disabled>SEND</button>
+              </div>
+            </div>
+
+            <div class="param-field">
+              <div class="param-label-row">
+                <span class="param-title">Measured Run Distance</span>
+                <span class="param-sub">Meters, last forward run</span>
+              </div>
+              <div class="input-row">
+                <input type="number" id="inpDistMeasured" placeholder="e.g. 6.950" step="0.001">
+                <button class="btn-send-mini mono" id="btnDistMeasured" onclick="sendDistMeasured()" disabled>COMPUTE</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Encoder Calibration & Odometry Tuning -->
       <div class="card">
         <div class="card-header">
@@ -1323,7 +1361,7 @@ function setControlsEnabled(enable) {
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
     'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnKx', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
-    'btnCalSteps', 'btnAutoCal'
+    'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured'
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
@@ -1535,7 +1573,7 @@ function setFromConfig(id, text) {
 }
 
 function parseConfigPacket(cfgStr) {
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f
   const clean = cfgStr.replace('CFG:', '');
   const tokens = clean.split(' ');
   tokens.forEach(tok => {
@@ -1557,6 +1595,9 @@ function parseConfigPacket(cfgStr) {
       setFromConfig('inpKp', fVal.toFixed(1));
     } else if (k === 'KX') {
       setFromConfig('inpKx', fVal.toFixed(1));
+    } else if (k === 'DK') {
+      setFromConfig('inpDistFactor', fVal.toFixed(4));
+      document.getElementById('lblDistFactor').textContent = `Current: ×${fVal.toFixed(4)}`;
     } else if (k === 'BF') {
       setFromConfig('inpFwdBias', fVal.toFixed(1));
     } else if (k === 'BR') {
@@ -1860,6 +1901,19 @@ async function sendAutoCalibration() {
   }
   await sendRawCommand(`CALIBRATE:${measured.toFixed(4)}`);
   logMsg(`Sent auto-calibration measurement: ${measured.toFixed(3)} m`, 'info');
+}
+
+async function sendDistMeasured() {
+  const measured = parseFloat(document.getElementById('inpDistMeasured').value);
+  if (isNaN(measured) || measured <= 0.05) {
+    alert('Please enter the measured distance in meters (e.g. 6.950).');
+    return;
+  }
+  // The car computes the new factor so it always uses its own current
+  // factor and forward distance; the CFG echo updates the Factor box.
+  dirtyInputs.delete('inpDistFactor');
+  await sendRawCommand(`DIST_MEASURED:${measured.toFixed(4)}`);
+  logMsg(`Sent measured distance for distance factor: ${measured.toFixed(3)} m`, 'info');
 }
 
 function setPresetDist(distM) {
