@@ -98,6 +98,7 @@ const float ACCEL_TIME_SEC = 2.0;
 const float MM_PER_REV = PI * WHEEL_DIAMETER_MM;
 const float STEPS_PER_METER = (STEPS_PER_REV * MICROSTEP) / (MM_PER_REV / 1000.0);
 const float DEFAULT_TICKS_PER_METER = AS5600_TICKS_PER_REV / (MM_PER_REV / 1000.0);
+const float CAR_LENGTH_M = 0.205;
 
 // Step count safety margin: the timer ISR is capped at this multiple of
 // the nominal (distance/speed derived) step count. Actual leg completion
@@ -113,7 +114,7 @@ const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negat
 // Top cruise speed (steps/sec), set from the dashboard with MAX_V:<m/s>
 // and saved in NVS. Everything speed-related - leg speeds, the total-time
 // split, the "fastest possible" time - is computed against it.
-volatile float rt_MAX_SPEED = 5000.0;
+volatile float rt_MAX_SPEED = 6684.0;
 const float MAX_SPEED_MIN_MPS = 0.20;  // allowed range for MAX_V
 const float MAX_SPEED_MAX_MPS = 1.50;
 
@@ -140,7 +141,6 @@ volatile float rt_REVERSE_DIST_M = 1.000;
 // less. Everything that moves the car or measures its travel uses
 // fwdTravelM() / revTravelM(); only the config readback shows the
 // distances as entered.
-const float CAR_LENGTH_M = 0.207;
 const float MIN_TRAVEL_M = 0.05;
 float fwdTravelM() { return max(rt_FORWARD_DIST_M - CAR_LENGTH_M, MIN_TRAVEL_M); }
 float revTravelM() { return max(rt_REVERSE_DIST_M - CAR_LENGTH_M, MIN_TRAVEL_M); }
@@ -179,7 +179,7 @@ float bottleTravelM() { return rt_BOTTLE_M - CAR_LENGTH_M; }
 // Whole-run time target (s); 0 = off and TIME_F/TIME_R are used as set.
 // When on, the leg times are computed from it - see applyTotalTime().
 volatile float rt_TOTAL_TIME_S = 0.0;
-volatile float rt_CATCH_MPS = 0.30;
+volatile float rt_CATCH_MPS = 0.50;
 const float CATCH_BEFORE_M = 0.10;  // margin for bottle placement / distance error
 const float CATCH_AFTER_M = 0.10;   // hold catch speed while the bottle settles against the pusher
 const float PUSH_ACCEL_FRACTION = 0.5;
