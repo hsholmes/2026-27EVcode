@@ -991,7 +991,7 @@
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">Forward Distance</span>
-              <span class="param-sub">Meters</span>
+              <span class="param-sub">m · car length 0.207 subtracted</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpFwdDist" value="1.000" step="0.050" min="0.1" max="25.0" oninput="updateEstimates()">
@@ -1015,7 +1015,7 @@
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">Bottle Position</span>
-              <span class="param-sub">m from car front · 0 = none</span>
+              <span class="param-sub">m · car length subtracted · 0 = none</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpBottle" value="0.000" step="0.050" min="0" max="25.0">
@@ -1037,6 +1037,18 @@
             <div class="input-row">
               <input type="number" id="inpCatchV" value="0.30" step="0.05" min="0.05" max="1.0">
               <button class="btn-send-mini mono" id="btnCatchV" onclick="sendParam('CATCH_V', 'inpCatchV', 'btnCatchV')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Top Speed -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Max Speed</span>
+              <span class="param-sub">m/s · 0.20–1.50</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpMaxV" value="0.750" step="0.025" min="0.2" max="1.5">
+              <button class="btn-send-mini mono" id="btnMaxV" onclick="sendParam('MAX_V', 'inpMaxV', 'btnMaxV')" disabled>SEND</button>
             </div>
           </div>
 
@@ -1092,7 +1104,7 @@
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">Reverse Distance</span>
-              <span class="param-sub">Meters</span>
+              <span class="param-sub">m · car length 0.207 subtracted</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpRevDist" value="1.000" step="0.050" min="0.0" max="25.0" oninput="updateEstimates()">
@@ -1412,7 +1424,7 @@ function setConnectionState(state, label) {
 function setControlsEnabled(enable) {
   const ids = [
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
-    'btnTotalTime', 'btnFwdDist', 'btnFwdTime', 'btnBottle', 'btnBottle2', 'btnBottle3', 'btnBottle4', 'btnCatchV', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
+    'btnTotalTime', 'btnFwdDist', 'btnFwdTime', 'btnBottle', 'btnBottle2', 'btnBottle3', 'btnBottle4', 'btnCatchV', 'btnMaxV', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
     'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured'
   ];
@@ -1644,7 +1656,7 @@ function setFromConfig(id, text) {
 }
 
 function parseConfigPacket(cfgStr) {
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f MV:%.3f
   const clean = cfgStr.replace('CFG:', '');
   const tokens = clean.split(' ');
   // TT comes after TF/TR in the packet but decides how they're shown, so read it first
@@ -1669,6 +1681,8 @@ function parseConfigPacket(cfgStr) {
     } else if (k === 'TT') {
       setFromConfig('inpTotalTime', fVal.toFixed(2));
       applyTotalTimeLock();
+    } else if (k === 'MV') {
+      setFromConfig('inpMaxV', fVal.toFixed(3));
     } else if (k === 'MT') {
       document.getElementById('lblMinTotal').textContent =
         totalTimeActive ? `s · fastest ${fVal.toFixed(2)} s` : `s · 0 = off · fastest ${fVal.toFixed(2)} s`;
@@ -1842,6 +1856,7 @@ async function sendAllParameters() {
   if (!totalOn) { await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap(); }
   await sendParam('BOTTLE', 'inpBottle',  'btnBottle');  await gap();
   await sendParam('CATCH_V','inpCatchV',  'btnCatchV');  await gap();
+  await sendParam('MAX_V',  'inpMaxV',    'btnMaxV');    await gap();
   await sendParam('KP',     'inpKp',      'btnKp');      await gap();
   await sendParam('KX',     'inpKx',      'btnKx');      await gap();
   await sendParam('KP_ENC', 'inpKe',      'btnKe');      await gap();
@@ -2029,6 +2044,8 @@ function setPresetDist(distM) {
   }
 }
 
+const CAR_LENGTH_M = 0.207;  // keep in sync with CAR_LENGTH_M in the firmware
+
 function updateEstimates() {
   const fDist = parseFloat(document.getElementById('inpFwdDist').value) || 0;
   const fTime = Math.max(0.5, parseFloat(document.getElementById('inpFwdTime').value) || 10);
@@ -2041,8 +2058,11 @@ function updateEstimates() {
   const fSpeed = fDist / fTime;
   const rSpeed = rDist / rTime;
 
-  document.getElementById('dispDistTarget').textContent = fDist.toFixed(3);
-  currentTargetM = fDist;
+  // The car travels the entered distance minus its own length (firmware
+  // CAR_LENGTH_M) - show what it will actually travel, as telemetry does.
+  const fTravel = Math.max(fDist - CAR_LENGTH_M, 0.05);
+  document.getElementById('dispDistTarget').textContent = fTravel.toFixed(3);
+  currentTargetM = fTravel;
 }
 
 // ----------------------------------------------------

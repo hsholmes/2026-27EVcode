@@ -110,7 +110,12 @@ const float STEP_SAFETY_MARGIN = 1.3;
 // full push-reverse run.
 const bool FORWARD_ONLY = false;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
-const float MAX_SAFE_SPEED = 4500.0;  // steps/sec ceiling
+// Top cruise speed (steps/sec), set from the dashboard with MAX_V:<m/s>
+// and saved in NVS. Everything speed-related - leg speeds, the total-time
+// split, the "fastest possible" time - is computed against it.
+volatile float rt_MAX_SPEED = 5000.0;
+const float MAX_SPEED_MIN_MPS = 0.20;  // allowed range for MAX_V
+const float MAX_SPEED_MAX_MPS = 1.50;
 
 // The leg's speed profile (ramp-up and ramp-down) is computed in loop();
 // the slew timer's own per-wheel slew runs this many times faster than the
@@ -129,6 +134,16 @@ volatile float rt_FORWARD_BIAS = 0.0;
 volatile float rt_REVERSE_BIAS = 0.0;
 volatile float rt_FORWARD_DIST_M = 1.000;
 volatile float rt_REVERSE_DIST_M = 1.000;
+
+// DIST_F / DIST_R are entered as the competition distances; the car
+// itself is CAR_LENGTH_M long, so each leg actually travels that much
+// less. Everything that moves the car or measures its travel uses
+// fwdTravelM() / revTravelM(); only the config readback shows the
+// distances as entered.
+const float CAR_LENGTH_M = 0.207;
+const float MIN_TRAVEL_M = 0.05;
+float fwdTravelM() { return max(rt_FORWARD_DIST_M - CAR_LENGTH_M, MIN_TRAVEL_M); }
+float revTravelM() { return max(rt_REVERSE_DIST_M - CAR_LENGTH_M, MIN_TRAVEL_M); }
 volatile float rt_FORWARD_TIME_S = 10.0;
 volatile float rt_REVERSE_TIME_S = 10.0;
 volatile unsigned long rt_PAUSE_MS = 500;
@@ -152,13 +167,15 @@ const float MAX_ENC_CORR = 150.0;  // cap on encoder speed trim (st/s)
 // the dashboard shows the corrected (real-world) distance.
 volatile float rt_DIST_FACTOR = 1.0;
 
-// Bottle catch: the bottle starts rt_BOTTLE_M ahead of the car (measured
-// from the car's front at the start line; 0 = no bottle). The forward leg
+// Bottle catch: the bottle starts rt_BOTTLE_M from the start, entered the
+// same way as DIST_F (0 = no bottle) - so it's bottleTravelM() = that minus
+// CAR_LENGTH_M ahead of the car's front. The forward leg
 // slows to rt_CATCH_MPS from CATCH_BEFORE_M before the bottle to
 // CATCH_AFTER_M past it, so the bottle is picked up gently instead of
 // knocked over, then speeds back up at PUSH_ACCEL_FRACTION of the leg
 // accel. recalcRoute() raises the cruise speed to make up the lost time.
 volatile float rt_BOTTLE_M = 0.0;
+float bottleTravelM() { return rt_BOTTLE_M - CAR_LENGTH_M; }
 // Whole-run time target (s); 0 = off and TIME_F/TIME_R are used as set.
 // When on, the leg times are computed from it - see applyTotalTime().
 volatile float rt_TOTAL_TIME_S = 0.0;
@@ -184,6 +201,8 @@ void loadPreferences() {
   rt_KP_ENC = prefs.getFloat("kp_enc", rt_KP_ENC);
   rt_BOTTLE_M = prefs.getFloat("bottle_m", rt_BOTTLE_M);
   rt_TOTAL_TIME_S = prefs.getFloat("total_s", rt_TOTAL_TIME_S);
+  rt_MAX_SPEED = constrain(prefs.getFloat("max_sps", rt_MAX_SPEED),
+                           MAX_SPEED_MIN_MPS * STEPS_PER_METER, MAX_SPEED_MAX_MPS * STEPS_PER_METER);
   rt_CATCH_MPS = prefs.getFloat("catch_mps", rt_CATCH_MPS);
   rt_DIST_FACTOR = constrain(prefs.getFloat("dist_factor", rt_DIST_FACTOR), MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   prefs.end();
@@ -212,7 +231,9 @@ float FORWARD_ACCEL = 0;
 float REVERSE_ACCEL = 0;
 
 bool bottleCatchActive() {
-  return rt_BOTTLE_M > 0.0 && rt_BOTTLE_M < rt_FORWARD_DIST_M;
+  // Off when unset, or when the bottle would already be at the car's front
+  float b = bottleTravelM();
+  return rt_BOTTLE_M > 0.0 && b > 0.0 && b < fwdTravelM();
 }
 
 // Forward-leg speed cap (st/s) from the bottle catch at encoder leg
@@ -221,7 +242,7 @@ bool bottleCatchActive() {
 // then let it climb back at PUSH_ACCEL_FRACTION of the accel. Bottle
 // position is real-world, so it's scaled by DIST_FACTOR like the target.
 float catchSpeedLimit(float xM, float accel) {
-  float bottleM = rt_BOTTLE_M * rt_DIST_FACTOR;
+  float bottleM = bottleTravelM() * rt_DIST_FACTOR;
   float startM = bottleM - CATCH_BEFORE_M;
   float endM = bottleM + CATCH_AFTER_M;
   float aMps2 = accel / STEPS_PER_METER;
@@ -255,7 +276,7 @@ float simulateLegS(float distM, float cruise, bool withCatch) {
 // Cruise speed (st/s) that makes the forward leg, bottle slow-down
 // included, take timeS. Leg time falls as cruise rises, so bisect.
 float solveForwardCruise(float distM, float timeS) {
-  float lo = MIN_SAFE_SPEED, hi = MAX_SAFE_SPEED;
+  float lo = MIN_SAFE_SPEED, hi = rt_MAX_SPEED;
   if (simulateLegS(distM, hi, true) > timeS) return hi;  // can't make the time - go as fast as allowed
   for (int i = 0; i < 20; i++) {
     float mid = (lo + hi) / 2.0;
@@ -271,35 +292,35 @@ float solveForwardCruise(float distM, float timeS) {
 // the simulated legs plus the pause add up to the total. Sets the speeds
 // and writes the resulting leg times into rt_FORWARD/REVERSE_TIME_S.
 // In FORWARD_ONLY mode the total is just the forward leg.
-float minTotalTimeS = 0;  // fastest possible total at MAX_SAFE_SPEED, for the dashboard
+float minTotalTimeS = 0;  // fastest possible total at rt_MAX_SPEED, for the dashboard
 
 float simulateRunS(float cruise) {
   bool c = bottleCatchActive();
-  float t = simulateLegS(rt_FORWARD_DIST_M * rt_DIST_FACTOR, cruise, c);
+  float t = simulateLegS(fwdTravelM() * rt_DIST_FACTOR, cruise, c);
   if (!FORWARD_ONLY)
-    t += rt_PAUSE_MS / 1000.0 + simulateLegS(rt_REVERSE_DIST_M * rt_DIST_FACTOR, cruise, false);
+    t += rt_PAUSE_MS / 1000.0 + simulateLegS(revTravelM() * rt_DIST_FACTOR, cruise, false);
   return t;
 }
 
 void applyTotalTime() {
-  float lo = MIN_SAFE_SPEED, hi = MAX_SAFE_SPEED;
+  float lo = MIN_SAFE_SPEED, hi = rt_MAX_SPEED;
   if (simulateRunS(hi) <= rt_TOTAL_TIME_S) {
     for (int i = 0; i < 20; i++) {
       float mid = (lo + hi) / 2.0;
       if (simulateRunS(mid) > rt_TOTAL_TIME_S) lo = mid;
       else hi = mid;
     }
-  }  // else too short to make even flat out - run at MAX_SAFE_SPEED
+  }  // else too short to make even flat out - run at rt_MAX_SPEED
   FORWARD_SPEED = REVERSE_SPEED = hi;
-  rt_FORWARD_TIME_S = simulateLegS(rt_FORWARD_DIST_M * rt_DIST_FACTOR, hi, bottleCatchActive());
-  rt_REVERSE_TIME_S = simulateLegS(rt_REVERSE_DIST_M * rt_DIST_FACTOR, hi, false);
+  rt_FORWARD_TIME_S = simulateLegS(fwdTravelM() * rt_DIST_FACTOR, hi, bottleCatchActive());
+  rt_REVERSE_TIME_S = simulateLegS(revTravelM() * rt_DIST_FACTOR, hi, false);
 }
 
 // Recalculate step caps, speeds, and accel from the current parameters.
 // Called on startup and whenever a leg's distance/time changes via BLE.
 void recalcRoute() {
-  long forwardNominalSteps = (long)(rt_FORWARD_DIST_M * rt_DIST_FACTOR * STEPS_PER_METER);
-  long reverseNominalSteps = (long)(rt_REVERSE_DIST_M * rt_DIST_FACTOR * STEPS_PER_METER);
+  long forwardNominalSteps = (long)(fwdTravelM() * rt_DIST_FACTOR * STEPS_PER_METER);
+  long reverseNominalSteps = (long)(revTravelM() * rt_DIST_FACTOR * STEPS_PER_METER);
 
   FORWARD_STEP_CAP = (long)(forwardNominalSteps * STEP_SAFETY_MARGIN);
   REVERSE_STEP_CAP = (long)(reverseNominalSteps * STEP_SAFETY_MARGIN);
@@ -309,31 +330,35 @@ void recalcRoute() {
   // just "distance / time" at a hypothetical constant speed - each
   // ramp loses half an accel window's worth of distance versus running
   // at full speed the whole time.
-  minTotalTimeS = simulateRunS(MAX_SAFE_SPEED);
+  minTotalTimeS = simulateRunS(rt_MAX_SPEED);
   if (rt_TOTAL_TIME_S > 0) {
     applyTotalTime();
   } else {
     float fTime = max(rt_FORWARD_TIME_S - ACCEL_TIME_SEC, 0.5f);
     float rTime = max(rt_REVERSE_TIME_S - ACCEL_TIME_SEC, 0.5f);
-    FORWARD_SPEED = constrain(forwardNominalSteps / fTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
-    REVERSE_SPEED = constrain(reverseNominalSteps / rTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
+    FORWARD_SPEED = constrain(forwardNominalSteps / fTime, MIN_SAFE_SPEED, rt_MAX_SPEED);
+    REVERSE_SPEED = constrain(reverseNominalSteps / rTime, MIN_SAFE_SPEED, rt_MAX_SPEED);
     // The bottle slow-down costs time the simple formula above doesn't
     // know about - simulate the leg instead and pick a faster cruise.
     if (bottleCatchActive())
-      FORWARD_SPEED = solveForwardCruise(rt_FORWARD_DIST_M * rt_DIST_FACTOR, rt_FORWARD_TIME_S);
+      FORWARD_SPEED = solveForwardCruise(fwdTravelM() * rt_DIST_FACTOR, rt_FORWARD_TIME_S);
   }
   FORWARD_ACCEL = FORWARD_SPEED / ACCEL_TIME_SEC;
   REVERSE_ACCEL = REVERSE_SPEED / ACCEL_TIME_SEC;
 
   Serial.print("[ROUTE] Fwd: ");
   Serial.print(rt_FORWARD_DIST_M, 3);
-  Serial.print("m / ");
+  Serial.print("m (travel ");
+  Serial.print(fwdTravelM(), 3);
+  Serial.print("m) / ");
   Serial.print(rt_FORWARD_TIME_S, 1);
   Serial.print("s @ ");
   Serial.print(FORWARD_SPEED, 0);
   Serial.print("st/s | Rev: ");
   Serial.print(rt_REVERSE_DIST_M, 3);
-  Serial.print("m / ");
+  Serial.print("m (travel ");
+  Serial.print(revTravelM(), 3);
+  Serial.print("m) / ");
   Serial.print(rt_REVERSE_TIME_S, 1);
   Serial.print("s @ ");
   Serial.print(REVERSE_SPEED, 0);
@@ -348,7 +373,9 @@ void recalcRoute() {
   if (bottleCatchActive()) {
     Serial.print("[ROUTE] Bottle at ");
     Serial.print(rt_BOTTLE_M, 2);
-    Serial.print("m, catch at ");
+    Serial.print("m (");
+    Serial.print(bottleTravelM(), 3);
+    Serial.print("m ahead of the car), catch at ");
     Serial.print(rt_CATCH_MPS, 2);
     Serial.println("m/s");
   }
@@ -672,14 +699,15 @@ unsigned long lastBLESend = 0;
 
 void sendVehicleConfig() {
   if (!bleConnected || statusChar == nullptr) return;
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f
-  // TT = total time target (0 = off), MT = fastest possible total.
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f MV:%.3f
+  // TT = total time target (0 = off), MT = fastest possible total, MV = top speed (m/s).
   char buf[256];
   snprintf(buf, sizeof(buf),
-           "CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f",
+           "CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f MV:%.3f",
            rt_FORWARD_DIST_M, rt_REVERSE_DIST_M, rt_FORWARD_TIME_S, rt_REVERSE_TIME_S,
            rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX,
-           rt_DIST_FACTOR, rt_KP_ENC, rt_BOTTLE_M, rt_CATCH_MPS, rt_TOTAL_TIME_S, minTotalTimeS);
+           rt_DIST_FACTOR, rt_KP_ENC, rt_BOTTLE_M, rt_CATCH_MPS, rt_TOTAL_TIME_S, minTotalTimeS,
+           rt_MAX_SPEED / STEPS_PER_METER);
   statusChar->setValue(String(buf));
   statusChar->notify();
 }
@@ -723,7 +751,7 @@ void startRunSequence() {
   legStartLeftTicks = leftEnc.totalTicks;
   legStartRightTicks = rightEnc.totalTicks;
 
-  stallSpeedCap = MAX_SAFE_SPEED;
+  stallSpeedCap = rt_MAX_SPEED;
   startLeg(FORWARD_STEP_CAP, FORWARD_ACCEL);
   beginLegRamp();
   phase = FORWARD;
@@ -830,12 +858,12 @@ void handleCommand(const String& cmdIn) {
   }
   if (upperCmd.startsWith("CALIBRATE:")) {
     // Adjusts the existing calibration by the ratio between the
-    // configured forward distance and what was actually measured with
+    // forward travel distance and what was actually measured with
     // a tape measure after a real run, rather than a fresh push test.
     float measuredM = cmd.substring(10).toFloat();
     if (measuredM > 30.0) measuredM /= 1000.0;
-    if (measuredM > 0.05 && rt_FORWARD_DIST_M > 0.05) {
-      float ratio = rt_FORWARD_DIST_M / measuredM;
+    if (measuredM > 0.05) {
+      float ratio = fwdTravelM() / measuredM;
       saveCalibration(ticksPerMeter * ratio);
       sendVehicleConfig();
     }
@@ -844,12 +872,13 @@ void handleCommand(const String& cmdIn) {
 
   if (upperCmd.startsWith("DIST_MEASURED:")) {
     // Distance-factor counterpart of CALIBRATE: scales DIST_FACTOR by
-    // set forward distance / tape-measured distance of the last run.
+    // forward travel distance (set distance minus the car's length) /
+    // tape-measured travel of the last run.
     // Leaves ticksPerMeter alone.
     float measuredM = cmd.substring(14).toFloat();
     if (measuredM > 30.0) measuredM /= 1000.0;
-    if (measuredM > 0.05 && rt_FORWARD_DIST_M > 0.05) {
-      float newFactor = rt_DIST_FACTOR * rt_FORWARD_DIST_M / measuredM;
+    if (measuredM > 0.05) {
+      float newFactor = rt_DIST_FACTOR * fwdTravelM() / measuredM;
       if (newFactor < MIN_DIST_FACTOR || newFactor > MAX_DIST_FACTOR) {
         if (bleConnected && statusChar != nullptr) {
           statusChar->setValue(String("STATUS:Distance factor out of range - check the measurement"));
@@ -935,6 +964,10 @@ void handleCommand(const String& cmdIn) {
     if (val > 30.0) val /= 1000.0;  // tolerate mm entry
     rt_BOTTLE_M = constrain(val, 0.0f, 25.0f);
     saveFloatParam("bottle_m", rt_BOTTLE_M);
+    recalcRoute();
+  } else if (key == "MAX_V") {
+    rt_MAX_SPEED = constrain(val, MAX_SPEED_MIN_MPS, MAX_SPEED_MAX_MPS) * STEPS_PER_METER;
+    saveFloatParam("max_sps", rt_MAX_SPEED);
     recalcRoute();
   } else if (key == "CATCH_V") {
     rt_CATCH_MPS = constrain(val, 0.05f, 1.0f);
@@ -1371,7 +1404,7 @@ void loop() {
   }
 
   float curDistM = 0.0;
-  float curTargetM = rt_FORWARD_DIST_M;
+  float curTargetM = fwdTravelM();
   float liveCompLeft = 1.0;
   float liveCompRight = 1.0;
 
@@ -1385,7 +1418,7 @@ void loop() {
       }
     }
   } else if (phase == PAUSE) {
-    curTargetM = rt_REVERSE_DIST_M;
+    curTargetM = revTravelM();
     if (now - pauseStartTime >= rt_PAUSE_MS) {
       startTime = millis();
       setDirection(false);
@@ -1409,11 +1442,12 @@ void loop() {
     float baseSpeed = isForward ? FORWARD_SPEED : REVERSE_SPEED;
     float accelRate = isForward ? FORWARD_ACCEL : REVERSE_ACCEL;
     float bias = isForward ? rt_FORWARD_BIAS : rt_REVERSE_BIAS;
-    // targetM is encoder distance (set distance x DIST_FACTOR); the
-    // dashboard gets the set distance and the factor-corrected distance.
-    float setDistM = isForward ? rt_FORWARD_DIST_M : rt_REVERSE_DIST_M;
-    float targetM = setDistM * rt_DIST_FACTOR;
-    curTargetM = setDistM;
+    // targetM is encoder distance (travel distance x DIST_FACTOR); the
+    // dashboard gets the travel distance (set distance minus the car's
+    // length) and the factor-corrected distance travelled.
+    float travelM = isForward ? fwdTravelM() : revTravelM();
+    float targetM = travelM * rt_DIST_FACTOR;
+    curTargetM = travelM;
 
     // Encoder-measured distance for this leg - the authoritative stop
     // signal, computed before the speed target below since the decel
