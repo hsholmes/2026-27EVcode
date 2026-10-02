@@ -975,6 +975,18 @@
 
         <div class="param-grid">
 
+          <!-- Total Run Time -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Total Run Time</span>
+              <span class="param-sub" id="lblMinTotal">s · 0 = set legs separately</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpTotalTime" value="0.00" step="0.05" min="0" max="120">
+              <button class="btn-send-mini mono" id="btnTotalTime" onclick="sendParam('TOTAL_TIME', 'inpTotalTime', 'btnTotalTime')" disabled>SEND</button>
+            </div>
+          </div>
+
           <!-- Forward Distance -->
           <div class="param-field">
             <div class="param-label-row">
@@ -996,6 +1008,35 @@
             <div class="input-row">
               <input type="number" id="inpFwdTime" value="10.0" step="0.5" min="1.0" max="60.0" oninput="updateEstimates()">
               <button class="btn-send-mini mono" id="btnFwdTime" onclick="sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime')" disabled>SEND</button>
+            </div>
+          </div>
+
+          <!-- Bottle Position -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Bottle Position</span>
+              <span class="param-sub">m from car front · 0 = none</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpBottle" value="0.000" step="0.050" min="0" max="25.0">
+              <button class="btn-send-mini mono" id="btnBottle" onclick="sendParam('BOTTLE', 'inpBottle', 'btnBottle')" disabled>SEND</button>
+            </div>
+            <div class="input-row">
+              <button class="btn-send-mini mono" id="btnBottle2" onclick="setBottlePreset(2)" disabled>2 m</button>
+              <button class="btn-send-mini mono" id="btnBottle3" onclick="setBottlePreset(3)" disabled>3 m</button>
+              <button class="btn-send-mini mono" id="btnBottle4" onclick="setBottlePreset(4)" disabled>4 m</button>
+            </div>
+          </div>
+
+          <!-- Bottle Catch Speed -->
+          <div class="param-field">
+            <div class="param-label-row">
+              <span class="param-title">Catch Speed</span>
+              <span class="param-sub">m/s at the bottle</span>
+            </div>
+            <div class="input-row">
+              <input type="number" id="inpCatchV" value="0.30" step="0.05" min="0.05" max="1.0">
+              <button class="btn-send-mini mono" id="btnCatchV" onclick="sendParam('CATCH_V', 'inpCatchV', 'btnCatchV')" disabled>SEND</button>
             </div>
           </div>
 
@@ -1371,13 +1412,31 @@ function setConnectionState(state, label) {
 function setControlsEnabled(enable) {
   const ids = [
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
-    'btnFwdDist', 'btnFwdTime', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
+    'btnTotalTime', 'btnFwdDist', 'btnFwdTime', 'btnBottle', 'btnBottle2', 'btnBottle3', 'btnBottle4', 'btnCatchV', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
     'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured'
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = !enable;
+  });
+  applyTotalTimeLock();
+}
+
+// Total-time mode: while the car has a Total Run Time set, it computes the
+// leg times itself, so the leg-time boxes just show them (read-only).
+let totalTimeActive = false;
+function applyTotalTimeLock() {
+  ['inpFwdTime', 'inpRevTime'].forEach(id => {
+    const el = document.getElementById(id);
+    el.readOnly = totalTimeActive;
+    el.style.opacity = totalTimeActive ? '0.6' : '';
+    el.title = totalTimeActive ? 'Set by Total Run Time' : '';
+  });
+  ['btnFwdTime', 'btnRevTime'].forEach(id => {
+    const el = document.getElementById(id);
+    if (totalTimeActive) el.disabled = true;
+    else if (isConnected) el.disabled = false;
   });
 }
 
@@ -1585,9 +1644,12 @@ function setFromConfig(id, text) {
 }
 
 function parseConfigPacket(cfgStr) {
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f
   const clean = cfgStr.replace('CFG:', '');
   const tokens = clean.split(' ');
+  // TT comes after TF/TR in the packet but decides how they're shown, so read it first
+  const ttTok = tokens.find(t => t.startsWith('TT:'));
+  totalTimeActive = ttTok ? parseFloat(ttTok.split(':')[1]) > 0 : false;
   tokens.forEach(tok => {
     const [k, v] = tok.split(':');
     let fVal = parseFloat(v);
@@ -1599,14 +1661,25 @@ function parseConfigPacket(cfgStr) {
     } else if (k === 'DR') {
       if (fVal > 30.0) fVal /= 1000.0;
       setFromConfig('inpRevDist', fVal.toFixed(3));
-    } else if (k === 'TF') {
-      setFromConfig('inpFwdTime', fVal.toFixed(1));
-    } else if (k === 'TR') {
-      setFromConfig('inpRevTime', fVal.toFixed(1));
+    } else if (k === 'TF' || k === 'TR') {
+      const id = (k === 'TF') ? 'inpFwdTime' : 'inpRevTime';
+      // In total-time mode the car computes the leg times - always show them
+      if (totalTimeActive) { dirtyInputs.delete(id); document.getElementById(id).value = fVal.toFixed(2); }
+      else setFromConfig(id, fVal.toFixed(2));
+    } else if (k === 'TT') {
+      setFromConfig('inpTotalTime', fVal.toFixed(2));
+      applyTotalTimeLock();
+    } else if (k === 'MT') {
+      document.getElementById('lblMinTotal').textContent =
+        totalTimeActive ? `s · fastest ${fVal.toFixed(2)} s` : `s · 0 = off · fastest ${fVal.toFixed(2)} s`;
     } else if (k === 'KP') {
       setFromConfig('inpKp', fVal.toFixed(1));
     } else if (k === 'KX') {
       setFromConfig('inpKx', fVal.toFixed(1));
+    } else if (k === 'BP') {
+      setFromConfig('inpBottle', fVal.toFixed(3));
+    } else if (k === 'CV') {
+      setFromConfig('inpCatchV', fVal.toFixed(2));
     } else if (k === 'KE') {
       setFromConfig('inpKe', fVal.toFixed(2));
     } else if (k === 'DK') {
@@ -1760,16 +1833,24 @@ async function sendParam(key, inputId, btnId) {
 
 async function sendAllParameters() {
   const gap = () => new Promise(r => setTimeout(r, 60));
+  // Total time is sent last, after everything it depends on (distances,
+  // bottle, pause); leg times are skipped when it's on, since setting one
+  // by hand switches total-time mode off on the car.
+  const totalOn = (parseFloat(document.getElementById('inpTotalTime').value) || 0) > 0;
+  if (!totalOn) { await sendParam('TOTAL_TIME', 'inpTotalTime', 'btnTotalTime'); await gap(); }
   await sendParam('DIST_F', 'inpFwdDist', 'btnFwdDist'); await gap();
-  await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap();
+  if (!totalOn) { await sendParam('TIME_F', 'inpFwdTime', 'btnFwdTime'); await gap(); }
+  await sendParam('BOTTLE', 'inpBottle',  'btnBottle');  await gap();
+  await sendParam('CATCH_V','inpCatchV',  'btnCatchV');  await gap();
   await sendParam('KP',     'inpKp',      'btnKp');      await gap();
   await sendParam('KX',     'inpKx',      'btnKx');      await gap();
   await sendParam('KP_ENC', 'inpKe',      'btnKe');      await gap();
   await sendParam('BIAS_F', 'inpFwdBias', 'btnFwdBias'); await gap();
   await sendParam('DIST_R', 'inpRevDist', 'btnRevDist'); await gap();
-  await sendParam('TIME_R', 'inpRevTime', 'btnRevTime'); await gap();
+  if (!totalOn) { await sendParam('TIME_R', 'inpRevTime', 'btnRevTime'); await gap(); }
   await sendParam('BIAS_R', 'inpRevBias', 'btnRevBias'); await gap();
   await sendParam('PAUSE',  'inpPause',   'btnPause');
+  if (totalOn) { await gap(); await sendParam('TOTAL_TIME', 'inpTotalTime', 'btnTotalTime'); }
   logMsg('All parameters sent to vehicle.', 'ok');
 }
 
@@ -1916,6 +1997,11 @@ async function sendAutoCalibration() {
   }
   await sendRawCommand(`CALIBRATE:${measured.toFixed(4)}`);
   logMsg(`Sent auto-calibration measurement: ${measured.toFixed(3)} m`, 'info');
+}
+
+function setBottlePreset(distM) {
+  document.getElementById('inpBottle').value = distM.toFixed(3);
+  sendParam('BOTTLE', 'inpBottle', 'btnBottle');
 }
 
 async function sendDistMeasured() {

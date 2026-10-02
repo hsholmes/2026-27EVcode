@@ -79,6 +79,10 @@ and setters `DIST_F/DIST_R` (m), `TIME_F/TIME_R` (s), `KP`, `KX`, `KP_ENC` (or `
 `BIAS_F/BIAS_R` (raw st/s, + steers right), `PAUSE` (ms),
 `DIST_FACTOR:<x>` (0.5–1.5) and `DIST_MEASURED:<m>` (factor ×= DIST_F ÷ measured).
 
+**Bottle catch (2026-10-01):** `BOTTLE:<m>` (bottle distance from the car's front at the start; 0 = off, NVS `bottle_m`) and `CATCH_V:<m/s>` (default 0.30, NVS `catch_mps`); CFG keys `BP`/`CV`. Forward leg only: slows at the leg accel to the catch speed from 10 cm before the bottle to 10 cm past it, then re-accelerates at half the accel (`catchSpeedLimit()`). `recalcRoute()` simulates the leg (`simulateForwardLegS`) and bisects for the cruise speed that still meets TIME_F; the catch costs ~1.3–1.7 s, so tight times hit the 4500 st/s cap. Dashboard: Bottle Position (with 2/3/4 m presets) and Catch Speed in Run Target Parameters, included in Sync All. Compile-checked, not yet run on the car.
+
+**Total run time (2026-10-02):** `TOTAL_TIME:<s>` (0 = off, NVS `total_s`). When on, `recalcRoute()` → `applyTotalTime()` bisects one cruise speed for both legs so simulated forward leg (incl. bottle catch) + pause + reverse leg = total (forward leg only in FORWARD_ONLY), and writes the resulting TIME_F/TIME_R. Re-solves whenever distances, bottle, catch speed, pause or factor change. A manual `TIME_F`/`TIME_R` switches it off. CFG adds `TT` (total) and `MT` (fastest possible total at the 4500 st/s cap); TF/TR now sent with 2 decimals. Dashboard: "Total Run Time" field first in Run Target Parameters; while on, the leg-time boxes are read-only and show the car's computed times, and Sync All skips them and sends TOTAL_TIME last. Compile-checked; solver checked against a Python copy of the simulation; not yet run on the car.
+
 **Encoder trim (2026-10-01):** `rt_KP_ENC` (default 0.2 st/s per tick diff, NVS key `kp_enc`). Set via `KP_ENC:<val>` or `KE:<val>`. Dashboard has a KE field in the parameter grid.
 
 **Distance factor (2026-09-30):** separate from ticks/m. Each leg stops at

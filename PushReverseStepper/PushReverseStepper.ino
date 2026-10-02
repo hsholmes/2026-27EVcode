@@ -108,7 +108,7 @@ const float STEP_SAFETY_MARGIN = 1.3;
 // Forward-only mode for calibrating and tuning distance: the run ends
 // after the forward leg (no pause, no reverse). Set false to restore the
 // full push-reverse run.
-const bool FORWARD_ONLY = true;
+const bool FORWARD_ONLY = false;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
 const float MAX_SAFE_SPEED = 4500.0;  // steps/sec ceiling
 
@@ -151,6 +151,21 @@ const float MAX_ENC_CORR = 150.0;  // cap on encoder speed trim (st/s)
 // without touching ticksPerMeter. Telemetry distance is divided by it, so
 // the dashboard shows the corrected (real-world) distance.
 volatile float rt_DIST_FACTOR = 1.0;
+
+// Bottle catch: the bottle starts rt_BOTTLE_M ahead of the car (measured
+// from the car's front at the start line; 0 = no bottle). The forward leg
+// slows to rt_CATCH_MPS from CATCH_BEFORE_M before the bottle to
+// CATCH_AFTER_M past it, so the bottle is picked up gently instead of
+// knocked over, then speeds back up at PUSH_ACCEL_FRACTION of the leg
+// accel. recalcRoute() raises the cruise speed to make up the lost time.
+volatile float rt_BOTTLE_M = 0.0;
+// Whole-run time target (s); 0 = off and TIME_F/TIME_R are used as set.
+// When on, the leg times are computed from it - see applyTotalTime().
+volatile float rt_TOTAL_TIME_S = 0.0;
+volatile float rt_CATCH_MPS = 0.30;
+const float CATCH_BEFORE_M = 0.10;  // margin for bottle placement / distance error
+const float CATCH_AFTER_M = 0.10;   // hold catch speed while the bottle settles against the pusher
+const float PUSH_ACCEL_FRACTION = 0.5;
 const float MIN_DIST_FACTOR = 0.5;
 const float MAX_DIST_FACTOR = 1.5;
 
@@ -167,6 +182,9 @@ void loadPreferences() {
   ticksPerMeter = prefs.getFloat("ticks_per_m", ticksPerMeter);
   rt_KX = prefs.getFloat("kx_xtrack", rt_KX);
   rt_KP_ENC = prefs.getFloat("kp_enc", rt_KP_ENC);
+  rt_BOTTLE_M = prefs.getFloat("bottle_m", rt_BOTTLE_M);
+  rt_TOTAL_TIME_S = prefs.getFloat("total_s", rt_TOTAL_TIME_S);
+  rt_CATCH_MPS = prefs.getFloat("catch_mps", rt_CATCH_MPS);
   rt_DIST_FACTOR = constrain(prefs.getFloat("dist_factor", rt_DIST_FACTOR), MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   prefs.end();
 }
@@ -193,6 +211,90 @@ float REVERSE_SPEED = 0;
 float FORWARD_ACCEL = 0;
 float REVERSE_ACCEL = 0;
 
+bool bottleCatchActive() {
+  return rt_BOTTLE_M > 0.0 && rt_BOTTLE_M < rt_FORWARD_DIST_M;
+}
+
+// Forward-leg speed cap (st/s) from the bottle catch at encoder leg
+// distance xM: decelerate (at the leg accel) down to the catch speed by
+// CATCH_BEFORE_M ahead of the bottle, hold it until CATCH_AFTER_M past,
+// then let it climb back at PUSH_ACCEL_FRACTION of the accel. Bottle
+// position is real-world, so it's scaled by DIST_FACTOR like the target.
+float catchSpeedLimit(float xM, float accel) {
+  float bottleM = rt_BOTTLE_M * rt_DIST_FACTOR;
+  float startM = bottleM - CATCH_BEFORE_M;
+  float endM = bottleM + CATCH_AFTER_M;
+  float aMps2 = accel / STEPS_PER_METER;
+  float vc = max((float)rt_CATCH_MPS, MIN_SAFE_SPEED / STEPS_PER_METER);
+  float limitMps;
+  if (xM < startM) limitMps = sqrt(vc * vc + 2.0 * aMps2 * (startM - xM));
+  else if (xM <= endM) limitMps = vc;
+  else limitMps = sqrt(vc * vc + 2.0 * aMps2 * PUSH_ACCEL_FRACTION * (xM - endM));
+  return limitMps * STEPS_PER_METER;
+}
+
+// Time (s) a leg takes at a given cruise speed, simulating the same speed
+// rules loop() uses: time-based ramp-up, bottle catch (forward leg only),
+// and distance-based ramp-down. Accel scales with cruise (cruise /
+// ACCEL_TIME_SEC), as in recalcRoute().
+float simulateLegS(float distM, float cruise, bool withCatch) {
+  const float dt = 0.004;
+  float accel = cruise / ACCEL_TIME_SEC;
+  float aMps2 = accel / STEPS_PER_METER;
+  float t = 0, x = 0;
+  while (x < distM && t < 120.0) {
+    float v = constrain(accel * t, MIN_SAFE_SPEED, cruise);
+    v = min(v, max((float)(sqrt(2.0 * aMps2 * (distM - x)) * STEPS_PER_METER), MIN_SAFE_SPEED));
+    if (withCatch) v = min(v, catchSpeedLimit(x, accel));
+    x += v / STEPS_PER_METER * dt;
+    t += dt;
+  }
+  return t;
+}
+
+// Cruise speed (st/s) that makes the forward leg, bottle slow-down
+// included, take timeS. Leg time falls as cruise rises, so bisect.
+float solveForwardCruise(float distM, float timeS) {
+  float lo = MIN_SAFE_SPEED, hi = MAX_SAFE_SPEED;
+  if (simulateLegS(distM, hi, true) > timeS) return hi;  // can't make the time - go as fast as allowed
+  for (int i = 0; i < 20; i++) {
+    float mid = (lo + hi) / 2.0;
+    if (simulateLegS(distM, mid, true) > timeS) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
+// Total-time mode (rt_TOTAL_TIME_S > 0): the whole run - forward leg,
+// pause, reverse leg - should take rt_TOTAL_TIME_S. Both legs get the
+// same cruise speed (keeps the top speed as low as possible), bisected so
+// the simulated legs plus the pause add up to the total. Sets the speeds
+// and writes the resulting leg times into rt_FORWARD/REVERSE_TIME_S.
+// In FORWARD_ONLY mode the total is just the forward leg.
+float minTotalTimeS = 0;  // fastest possible total at MAX_SAFE_SPEED, for the dashboard
+
+float simulateRunS(float cruise) {
+  bool c = bottleCatchActive();
+  float t = simulateLegS(rt_FORWARD_DIST_M * rt_DIST_FACTOR, cruise, c);
+  if (!FORWARD_ONLY)
+    t += rt_PAUSE_MS / 1000.0 + simulateLegS(rt_REVERSE_DIST_M * rt_DIST_FACTOR, cruise, false);
+  return t;
+}
+
+void applyTotalTime() {
+  float lo = MIN_SAFE_SPEED, hi = MAX_SAFE_SPEED;
+  if (simulateRunS(hi) <= rt_TOTAL_TIME_S) {
+    for (int i = 0; i < 20; i++) {
+      float mid = (lo + hi) / 2.0;
+      if (simulateRunS(mid) > rt_TOTAL_TIME_S) lo = mid;
+      else hi = mid;
+    }
+  }  // else too short to make even flat out - run at MAX_SAFE_SPEED
+  FORWARD_SPEED = REVERSE_SPEED = hi;
+  rt_FORWARD_TIME_S = simulateLegS(rt_FORWARD_DIST_M * rt_DIST_FACTOR, hi, bottleCatchActive());
+  rt_REVERSE_TIME_S = simulateLegS(rt_REVERSE_DIST_M * rt_DIST_FACTOR, hi, false);
+}
+
 // Recalculate step caps, speeds, and accel from the current parameters.
 // Called on startup and whenever a leg's distance/time changes via BLE.
 void recalcRoute() {
@@ -207,10 +309,19 @@ void recalcRoute() {
   // just "distance / time" at a hypothetical constant speed - each
   // ramp loses half an accel window's worth of distance versus running
   // at full speed the whole time.
-  float fTime = max(rt_FORWARD_TIME_S - ACCEL_TIME_SEC, 0.5f);
-  float rTime = max(rt_REVERSE_TIME_S - ACCEL_TIME_SEC, 0.5f);
-  FORWARD_SPEED = constrain(forwardNominalSteps / fTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
-  REVERSE_SPEED = constrain(reverseNominalSteps / rTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
+  minTotalTimeS = simulateRunS(MAX_SAFE_SPEED);
+  if (rt_TOTAL_TIME_S > 0) {
+    applyTotalTime();
+  } else {
+    float fTime = max(rt_FORWARD_TIME_S - ACCEL_TIME_SEC, 0.5f);
+    float rTime = max(rt_REVERSE_TIME_S - ACCEL_TIME_SEC, 0.5f);
+    FORWARD_SPEED = constrain(forwardNominalSteps / fTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
+    REVERSE_SPEED = constrain(reverseNominalSteps / rTime, MIN_SAFE_SPEED, MAX_SAFE_SPEED);
+    // The bottle slow-down costs time the simple formula above doesn't
+    // know about - simulate the leg instead and pick a faster cruise.
+    if (bottleCatchActive())
+      FORWARD_SPEED = solveForwardCruise(rt_FORWARD_DIST_M * rt_DIST_FACTOR, rt_FORWARD_TIME_S);
+  }
   FORWARD_ACCEL = FORWARD_SPEED / ACCEL_TIME_SEC;
   REVERSE_ACCEL = REVERSE_SPEED / ACCEL_TIME_SEC;
 
@@ -227,6 +338,20 @@ void recalcRoute() {
   Serial.print("s @ ");
   Serial.print(REVERSE_SPEED, 0);
   Serial.println("st/s");
+  if (rt_TOTAL_TIME_S > 0) {
+    Serial.print("[ROUTE] Total time ");
+    Serial.print(rt_TOTAL_TIME_S, 2);
+    Serial.print("s (fastest possible ");
+    Serial.print(minTotalTimeS, 2);
+    Serial.println("s)");
+  }
+  if (bottleCatchActive()) {
+    Serial.print("[ROUTE] Bottle at ");
+    Serial.print(rt_BOTTLE_M, 2);
+    Serial.print("m, catch at ");
+    Serial.print(rt_CATCH_MPS, 2);
+    Serial.println("m/s");
+  }
 }
 
 // ============================================================
@@ -547,13 +672,14 @@ unsigned long lastBLESend = 0;
 
 void sendVehicleConfig() {
   if (!bleConnected || statusChar == nullptr) return;
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f
-  char buf[200];
+  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f
+  // TT = total time target (0 = off), MT = fastest possible total.
+  char buf[256];
   snprintf(buf, sizeof(buf),
-           "CFG:DF:%.3f DR:%.3f TF:%.1f TR:%.1f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f",
+           "CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f",
            rt_FORWARD_DIST_M, rt_REVERSE_DIST_M, rt_FORWARD_TIME_S, rt_REVERSE_TIME_S,
            rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX,
-           rt_DIST_FACTOR, rt_KP_ENC);
+           rt_DIST_FACTOR, rt_KP_ENC, rt_BOTTLE_M, rt_CATCH_MPS, rt_TOTAL_TIME_S, minTotalTimeS);
   statusChar->setValue(String(buf));
   statusChar->notify();
 }
@@ -759,14 +885,31 @@ void handleCommand(const String& cmdIn) {
     rt_REVERSE_DIST_M = max(val, 0.05f);
     saveFloatParam("dist_rev_m", rt_REVERSE_DIST_M);
     recalcRoute();
-  } else if (key == "TIME_F") {
-    rt_FORWARD_TIME_S = constrain(val, 1.0f, 60.0f);
-    saveFloatParam("time_fwd_s", rt_FORWARD_TIME_S);
+  } else if (key == "TIME_F" || key == "TIME_R") {
+    // Setting a leg time by hand switches total-time mode off - otherwise
+    // recalcRoute() would just overwrite it.
+    if (rt_TOTAL_TIME_S > 0) {
+      rt_TOTAL_TIME_S = 0;
+      saveFloatParam("total_s", 0);
+    }
+    if (key == "TIME_F") {
+      rt_FORWARD_TIME_S = constrain(val, 1.0f, 60.0f);
+      saveFloatParam("time_fwd_s", rt_FORWARD_TIME_S);
+    } else {
+      rt_REVERSE_TIME_S = constrain(val, 1.0f, 60.0f);
+      saveFloatParam("time_rev_s", rt_REVERSE_TIME_S);
+    }
     recalcRoute();
-  } else if (key == "TIME_R") {
-    rt_REVERSE_TIME_S = constrain(val, 1.0f, 60.0f);
-    saveFloatParam("time_rev_s", rt_REVERSE_TIME_S);
+  } else if (key == "TOTAL_TIME") {
+    rt_TOTAL_TIME_S = (val <= 0) ? 0.0f : constrain(val, 1.0f, 120.0f);
+    saveFloatParam("total_s", rt_TOTAL_TIME_S);
     recalcRoute();
+    if (rt_TOTAL_TIME_S > 0 && rt_TOTAL_TIME_S < minTotalTimeS && bleConnected && statusChar != nullptr) {
+      char buf[96];
+      snprintf(buf, sizeof(buf), "STATUS:Total time too short - fastest possible is %.2f s", minTotalTimeS);
+      statusChar->setValue(String(buf));
+      statusChar->notify();
+    }
   } else if (key == "KP") {
     rt_KP_HEADING = constrain(val, 0.0f, 150.0f);
     saveFloatParam("kp_heading", rt_KP_HEADING);
@@ -779,6 +922,7 @@ void handleCommand(const String& cmdIn) {
   } else if (key == "PAUSE") {
     rt_PAUSE_MS = (unsigned long)constrain(val, 0.0f, 5000.0f);
     saveFloatParam("pause_ms", (float)rt_PAUSE_MS);
+    recalcRoute();  // the pause is part of the total time
   } else if (key == "KX") {
     rt_KX = constrain(val, 0.0f, 200.0f);
     saveFloatParam("kx_xtrack", rt_KX);
@@ -787,6 +931,15 @@ void handleCommand(const String& cmdIn) {
     saveFloatParam("kp_enc", rt_KP_ENC);
     Serial.print("[NVS] Encoder balance gain (KE): ");
     Serial.println(rt_KP_ENC, 3);
+  } else if (key == "BOTTLE") {
+    if (val > 30.0) val /= 1000.0;  // tolerate mm entry
+    rt_BOTTLE_M = constrain(val, 0.0f, 25.0f);
+    saveFloatParam("bottle_m", rt_BOTTLE_M);
+    recalcRoute();
+  } else if (key == "CATCH_V") {
+    rt_CATCH_MPS = constrain(val, 0.05f, 1.0f);
+    saveFloatParam("catch_mps", rt_CATCH_MPS);
+    recalcRoute();
   } else if (key == "DIST_FACTOR") {
     rt_DIST_FACTOR = constrain(val, MIN_DIST_FACTOR, MAX_DIST_FACTOR);
     saveFloatParam("dist_factor", rt_DIST_FACTOR);
@@ -1334,6 +1487,9 @@ void loop() {
       float rampedSpeedMps = sqrt(2.0 * accelMps2 * remainingM);
       rampedSpeed = min(rampedSpeed, max(rampedSpeedMps * STEPS_PER_METER, MIN_SAFE_SPEED));
     }
+    // Slow down to pick up the bottle - see catchSpeedLimit().
+    if (isForward && bottleCatchActive())
+      rampedSpeed = min(rampedSpeed, max(catchSpeedLimit(avgLegM, accelRate), MIN_SAFE_SPEED));
 
     // Reversing direction flips which wheel must speed up to correct
     // the same physical yaw, so the correction sign flips with it.
