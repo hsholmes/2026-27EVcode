@@ -109,7 +109,7 @@ const float STEP_SAFETY_MARGIN = 1.3;
 // Forward-only mode for calibrating and tuning distance: the run ends
 // after the forward leg (no pause, no reverse). Set false to restore the
 // full push-reverse run.
-const bool FORWARD_ONLY = false;
+const bool FORWARD_ONLY = true;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
 // Top cruise speed (steps/sec), set from the dashboard with MAX_V:<m/s>
 // and saved in NVS. Everything speed-related - leg speeds, the total-time
@@ -679,6 +679,40 @@ const char* phaseName(RunPhase p);  // see the Encoder prototype note above - sa
 void reportLegTracking(const char* leg, double diffTicks = 0.0);
 void finishRun(const char* reason, double diffTicks = 0.0);
 void sendBLEStatus(float distM, float targetM, float compLeft = 1.0, float compRight = 1.0);
+void dumpRunLog();
+
+// Live controller telemetry terms for logging & BLE stream
+float liveKpCorr = 0.0;
+float liveEncCorr = 0.0;
+float liveTargetHeading = 0.0;
+float liveRampedSpeed = 0.0;
+
+// High-resolution Onboard Run Logger (20 Hz in RAM, up to 30s)
+const int MAX_RUN_SAMPLES = 600;
+struct RunSample {
+  uint16_t elapsedMs;
+  uint8_t phase;          // 1=FWD, 2=PAUSE, 3=REV, 4=DONE
+  int16_t distMm;
+  int16_t targetDistMm;
+  int16_t speedCps;
+  int16_t headingCdeg;
+  int16_t targetHeadingCdeg;
+  int16_t gyroRateCdeg;
+  int16_t crossTrackMm;
+  int32_t leftTicks;
+  int32_t rightTicks;
+  uint16_t leftSteps;
+  uint16_t rightSteps;
+  int16_t kpCorrSps;
+  int16_t encCorrSps;
+  uint8_t trackLPct;
+  uint8_t trackRPct;
+  uint16_t railMv;
+};
+RunSample runSamples[MAX_RUN_SAMPLES];
+int runSampleCount = 0;
+unsigned long lastLogSampleMs = 0;
+unsigned long runLogStartMs = 0;
 
 // ============================================================
 // BLE Setup (ESP32 built-in BLEDevice stack)
@@ -710,6 +744,45 @@ void sendVehicleConfig() {
            rt_MAX_SPEED / STEPS_PER_METER);
   statusChar->setValue(String(buf));
   statusChar->notify();
+}
+
+void dumpRunLog() {
+  if (!bleConnected || statusChar == nullptr) {
+    Serial.println("[LOG] Cannot dump: BLE not connected");
+    return;
+  }
+  if (runSampleCount == 0) {
+    statusChar->setValue(String("STATUS:No onboard run data recorded"));
+    statusChar->notify();
+    return;
+  }
+
+  char header[80];
+  snprintf(header, sizeof(header), "LOG_START:%d", runSampleCount);
+  statusChar->setValue(String(header));
+  statusChar->notify();
+  delay(30);
+
+  char buf[128];
+  for (int i = 0; i < runSampleCount; i++) {
+    const RunSample& s = runSamples[i];
+    snprintf(buf, sizeof(buf),
+             "LOG_D:%d,%u,%u,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%u,%d,%d,%u,%u,%u",
+             i, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
+             s.headingCdeg, s.targetHeadingCdeg, s.gyroRateCdeg, s.crossTrackMm,
+             (long)s.leftTicks, (long)s.rightTicks, s.leftSteps, s.rightSteps,
+             s.kpCorrSps, s.encCorrSps, s.trackLPct, s.trackRPct, s.railMv);
+    statusChar->setValue(String(buf));
+    statusChar->notify();
+    delay(15);
+  }
+
+  snprintf(buf, sizeof(buf), "LOG_END:%d", runSampleCount);
+  statusChar->setValue(String(buf));
+  statusChar->notify();
+  Serial.print("[LOG] Dumped ");
+  Serial.print(runSampleCount);
+  Serial.println(" samples over BLE.");
 }
 
 // Starts the forward leg - shared by the physical button and the BLE
@@ -746,6 +819,11 @@ void startRunSequence() {
   setDirection(true);
   armMotors(true);
 
+  // Reset onboard run logger
+  runSampleCount = 0;
+  runLogStartMs = millis();
+  lastLogSampleMs = 0;
+
   updateEncoder(leftEnc);
   updateEncoder(rightEnc);
   legStartLeftTicks = leftEnc.totalTicks;
@@ -777,6 +855,10 @@ void resetRun() {
   rightEnc.totalTicks = 0;
   legStartLeftTicks = 0;
   legStartRightTicks = 0;
+  liveKpCorr = 0.0;
+  liveEncCorr = 0.0;
+  liveTargetHeading = 0.0;
+  liveRampedSpeed = 0.0;
 
   recalcRoute();
 
@@ -823,6 +905,18 @@ void handleCommand(const String& cmdIn) {
   }
   if (upperCmd == "GET_CONFIG") {
     sendVehicleConfig();
+    return;
+  }
+  if (upperCmd == "LOG_DUMP" || upperCmd == "GET_LOG") {
+    dumpRunLog();
+    return;
+  }
+  if (upperCmd == "LOG_CLEAR") {
+    runSampleCount = 0;
+    if (bleConnected && statusChar != nullptr) {
+      statusChar->setValue(String("STATUS:Onboard log cleared"));
+      statusChar->notify();
+    }
     return;
   }
   if (upperCmd == "CAL_START") {
@@ -1199,9 +1293,9 @@ void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) 
 
   float speedMps = ((leftCurrentSpeed + rightCurrentSpeed) / 2.0) / STEPS_PER_METER;
 
-  char buf[230];
+  char buf[250];
   snprintf(buf, sizeof(buf),
-           "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f CL:%.3f CR:%.3f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f",
+           "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f CL:%.3f CR:%.3f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f KC:%.1f EC:%.1f TH:%.1f SL:%ld SR:%ld",
            phaseName(phase), distM, targetM, speedMps, headingAngle, currentGyroRate_dps,
            readRailVoltage(),
            LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks,
@@ -1209,7 +1303,9 @@ void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) 
            compLeft, compRight,
            motorsArmed ? 1 : 0,
            (phase == WAIT_BUTTON) ? 0UL : (phase == DONE) ? finishElapsedMs : (millis() - startTime),
-           trackLPct, trackRPct, crossTrackM * 1000.0);
+           trackLPct, trackRPct, crossTrackM * 1000.0,
+           liveKpCorr, liveEncCorr, liveTargetHeading,
+           leftPosition, rightPosition);
   statusChar->setValue(String(buf));
   statusChar->notify();
 }
@@ -1237,6 +1333,34 @@ void finishRun(const char* reason, double diffTicks) {
 
   lastRunFailed = (strcmp(reason, RUN_DONE_FULL) != 0 && strcmp(reason, RUN_DONE_FORWARD_ONLY) != 0);
   finishElapsedMs = (phase == WAIT_BUTTON) ? 0 : millis() - startTime;
+
+  // Record terminal sample into onboard run logger
+  if (runSampleCount < MAX_RUN_SAMPLES) {
+    RunSample& s = runSamples[runSampleCount++];
+    s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
+    s.phase = 4; // DONE
+    s.distMm = (int16_t)constrain(encoderDistM(leftEnc, LEFT_ENC_INVERT) * 1000.0f / rt_DIST_FACTOR, -32000.0f, 32000.0f);
+    s.targetDistMm = (int16_t)constrain(fwdTravelM() * 1000.0f, -32000.0f, 32000.0f);
+    s.speedCps = 0;
+    s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
+    s.targetHeadingCdeg = 0;
+    s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
+    s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
+    s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
+    s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
+    s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
+    s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
+    s.kpCorrSps = 0;
+    s.encCorrSps = 0;
+    s.trackLPct = (uint8_t)constrain((int)minTrackLPct, 0, 255);
+    s.trackRPct = (uint8_t)constrain((int)minTrackRPct, 0, 255);
+    s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
+  }
+
+  liveKpCorr = 0.0;
+  liveEncCorr = 0.0;
+  liveTargetHeading = 0.0;
+  liveRampedSpeed = 0.0;
 
   Serial.print("[RUN] Finished: ");
   Serial.print(reason);
@@ -1419,6 +1543,32 @@ void loop() {
     }
   } else if (phase == PAUSE) {
     curTargetM = revTravelM();
+    liveKpCorr = 0.0;
+    liveEncCorr = 0.0;
+    liveTargetHeading = 0.0;
+    liveRampedSpeed = 0.0;
+    if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
+      lastLogSampleMs = millis();
+      RunSample& s = runSamples[runSampleCount++];
+      s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
+      s.phase = 2; // PAUSE
+      s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
+      s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
+      s.speedCps = 0;
+      s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
+      s.targetHeadingCdeg = 0;
+      s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
+      s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
+      s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
+      s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
+      s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
+      s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
+      s.kpCorrSps = 0;
+      s.encCorrSps = 0;
+      s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
+      s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
+      s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
+    }
     if (now - pauseStartTime >= rt_PAUSE_MS) {
       startTime = millis();
       setDirection(false);
@@ -1565,6 +1715,34 @@ void loop() {
 
     liveCompLeft = (rampedSpeed > 1.0) ? (leftTargetSpeed / rampedSpeed) : 1.0;
     liveCompRight = (rampedSpeed > 1.0) ? (rightTargetSpeed / rampedSpeed) : 1.0;
+
+    liveKpCorr = kpCorrection;
+    liveEncCorr = encCorr;
+    liveTargetHeading = targetHeading;
+    liveRampedSpeed = rampedSpeed;
+
+    if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
+      lastLogSampleMs = millis();
+      RunSample& s = runSamples[runSampleCount++];
+      s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
+      s.phase = isForward ? 1 : 3;
+      s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
+      s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
+      s.speedCps = (int16_t)constrain((((leftCurrentSpeed + rightCurrentSpeed) / 2.0f) / STEPS_PER_METER) * 100.0f, -3200.0f, 3200.0f);
+      s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
+      s.targetHeadingCdeg = (int16_t)constrain(liveTargetHeading * 100.0f, -32000.0f, 32000.0f);
+      s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
+      s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
+      s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
+      s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
+      s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
+      s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
+      s.kpCorrSps = (int16_t)constrain(liveKpCorr, -32000.0f, 32000.0f);
+      s.encCorrSps = (int16_t)constrain(liveEncCorr, -32000.0f, 32000.0f);
+      s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
+      s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
+      s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
+    }
 
     // A stalled wheel isn't turning anyway, so drop its command straight
     // to the restart speed - slewing down would leave it buzzing longer.

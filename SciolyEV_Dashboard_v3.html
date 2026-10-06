@@ -338,6 +338,175 @@
     padding: 18px;
   }
 
+  /* Run Telemetry & LLM Analysis Card */
+  .llm-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .llm-actions-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .btn-llm {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+  .btn-llm-primary {
+    background: #1b263b;
+    border-color: #2e4a70;
+    color: #93c5fd;
+  }
+  .btn-llm-primary:hover:not(:disabled) {
+    background: #233452;
+    border-color: #4a75ad;
+    color: #bfdbfe;
+  }
+  .btn-llm-copy {
+    background: #192b23;
+    border-color: #27523f;
+    color: #86efac;
+  }
+  .btn-llm-copy:hover:not(:disabled) {
+    background: #233e32;
+    border-color: #3b7e60;
+    color: #bbf7d0;
+  }
+  .btn-llm-secondary {
+    background: var(--bg-card);
+    border-color: var(--border-medium);
+    color: var(--text-main);
+  }
+  .btn-llm-secondary:hover:not(:disabled) {
+    background: var(--bg-elevated);
+    border-color: var(--border-focus);
+  }
+  .btn-llm-fetch {
+    background: #2d1e18;
+    border-color: #5c3826;
+    color: #fdba74;
+  }
+  .btn-llm-fetch:hover:not(:disabled) {
+    background: #3d281f;
+    border-color: #854d2f;
+    color: #fed7aa;
+  }
+  .btn-llm:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .session-status-badge {
+    padding: 3px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    border-radius: var(--radius);
+    border: 1px solid var(--border-medium);
+    background: var(--bg-card);
+    color: var(--text-muted);
+  }
+  .session-status-badge.recording {
+    border-color: var(--status-run);
+    color: var(--status-run);
+    background: #101c2b;
+    animation: pulse 1s infinite;
+  }
+  .session-status-badge.ready {
+    border-color: var(--status-ready);
+    color: var(--status-ready);
+    background: #102419;
+  }
+  .diag-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 8px;
+  }
+  .diag-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .diag-label {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .diag-val {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+  .diag-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .advice-box {
+    background: #12161f;
+    border: 1px solid #1f2b3e;
+    border-left: 3px solid #60a5fa;
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+  .advice-title {
+    font-weight: 700;
+    color: #93c5fd;
+    margin-bottom: 4px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .preview-toggle {
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .preview-toggle:hover {
+    color: var(--text-main);
+  }
+  .preview-content {
+    background: var(--bg-input);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius);
+    padding: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #94a3b8;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
   /* Grid */
   .dashboard-grid {
     display: grid;
@@ -919,6 +1088,19 @@
             </div>
             <span id="crossTrackBadge" class="nav-badge" style="font-size:10px;padding:3px 8px;border:1px solid var(--border-subtle);">Offset —</span>
           </div>
+
+          <!-- Sensor Influence: live gyro heading corr & encoder trim -->
+          <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-subtle);display:flex;align-items:center;justify-content:space-between;" class="mono">
+            <div style="display:flex;flex-direction:column;gap:2px;">
+              <span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;">LIVE SENSOR STEERING TRIM</span>
+              <div style="display:flex;gap:8px;align-items:center;font-size:12px;font-weight:600;">
+                <span id="liveGyroCorrVal" style="color:var(--status-ready);" title="Gyro Heading Correction (st/s)">Gyro: 0.0</span>
+                <span style="color:var(--border);">/</span>
+                <span id="liveEncTrimVal" style="color:var(--accent-blue);" title="Encoder Differential Trim (st/s)">Enc: 0.0</span>
+              </div>
+            </div>
+            <span id="liveTargetHeadBadge" class="nav-badge" style="font-size:10px;padding:3px 8px;border:1px solid var(--border-subtle);" title="Cross-track Target Heading">Tgt H: 0.0°</span>
+          </div>
         </div>
       </div>
 
@@ -1227,6 +1409,90 @@
         </div>
       </div>
 
+      <!-- Run Telemetry & LLM Diagnostics Card -->
+      <div class="card llm-card" id="cardTelemetryAnalysis">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:14px;">🧠</span>
+            <span class="card-title">Run Telemetry &amp; LLM Diagnostics</span>
+          </div>
+          <span class="session-status-badge mono" id="sessionStatusBadge">RECORDER STANDBY</span>
+        </div>
+
+        <!-- Latest Run Quick Stats Grid -->
+        <div class="diag-grid mono">
+          <div class="diag-box">
+            <span class="diag-label">Travel vs Target</span>
+            <span class="diag-val" id="diagDistVal">0.000 / 0.000 m</span>
+            <span class="diag-sub" id="diagDistErr">Err: —</span>
+          </div>
+          <div class="diag-box">
+            <span class="diag-label">Run Duration</span>
+            <span class="diag-val" id="diagTimeVal">0.00 s</span>
+            <span class="diag-sub" id="diagTimeTarget">Target: —</span>
+          </div>
+          <div class="diag-box">
+            <span class="diag-label">Final Yaw / Max Drift</span>
+            <span class="diag-val" id="diagHeadingVal">0.0° / 0.0°</span>
+            <span class="diag-sub" id="diagHeadingSub">RMS: 0.0°</span>
+          </div>
+          <div class="diag-box">
+            <span class="diag-label">Cross-Track Offset</span>
+            <span class="diag-val" id="diagCrossTrackVal">0 mm</span>
+            <span class="diag-sub" id="diagCrossTrackMax">Peak: 0 mm</span>
+          </div>
+          <div class="diag-box">
+            <span class="diag-label">Sensor Steering Influence</span>
+            <span class="diag-val" id="diagSensorTrimVal">G: ±0.0 · E: ±0.0</span>
+            <span class="diag-sub" id="diagSensorTrimSub">Peak st/s corrections</span>
+          </div>
+          <div class="diag-box">
+            <span class="diag-label">Wheel Slip &amp; Δticks</span>
+            <span class="diag-val" id="diagTrackingVal">L —% / R —%</span>
+            <span class="diag-sub" id="diagDeltaTicks">Δticks: 0</span>
+          </div>
+        </div>
+
+        <!-- Automated Heuristic Diagnostics / Tuning Recommendations -->
+        <div class="advice-box" id="adviceBox">
+          <div class="advice-title">
+            <span>💡</span><span>PRE-FLIGHT / HEURISTIC DIAGNOSIS</span>
+          </div>
+          <div id="adviceContent">
+            Run the vehicle or click <b>FETCH CAR ONBOARD LOG</b> to capture complete high-resolution telemetry. Once recorded, you can download a full LLM analysis prompt or CSV.
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="llm-actions-bar">
+          <button class="btn-llm btn-llm-primary mono" id="btnDownloadLLM" onclick="downloadLLMReport()" disabled>
+            🤖 DOWNLOAD LLM REPORT (.MD)
+          </button>
+          <button class="btn-llm btn-llm-copy mono" id="btnCopyLLM" onclick="copyLLMPrompt()" disabled>
+            📋 COPY FOR LLM
+          </button>
+          <button class="btn-llm btn-llm-secondary mono" id="btnDownloadCSV" onclick="downloadRunCSV()" disabled>
+            📊 TELEMETRY CSV
+          </button>
+          <button class="btn-llm btn-llm-secondary mono" id="btnDownloadJSON" onclick="downloadRunJSON()" disabled>
+            💾 JSON DATA
+          </button>
+          <button class="btn-llm btn-llm-fetch mono" id="btnFetchOnboardLog" onclick="fetchCarOnboardLog()" disabled>
+            📥 FETCH CAR ONBOARD LOG (20Hz)
+          </button>
+        </div>
+
+        <!-- Collapsible Preview of LLM Report -->
+        <div>
+          <div class="preview-toggle mono" onclick="toggleLLMPreview()">
+            <span id="previewArrow">▶</span> <span>VIEW FORMATTED LLM PROMPT &amp; TELEMETRY DATA</span>
+          </div>
+          <div class="preview-content" id="llmPreviewBox" style="display:none;margin-top:8px;">
+(No run recorded yet. Data and system prompt will appear here after a run.)
+          </div>
+        </div>
+      </div>
+
       <!-- Telemetry Event Log -->
       <div class="card log-card">
         <div class="card-header">
@@ -1426,7 +1692,8 @@ function setControlsEnabled(enable) {
     'btnReset', 'btnArmToggle', 'btnOpenPushCal', 'btnStart', 'btnStop', 'btnSendAll',
     'btnTotalTime', 'btnFwdDist', 'btnFwdTime', 'btnBottle', 'btnBottle2', 'btnBottle3', 'btnBottle4', 'btnCatchV', 'btnMaxV', 'btnKp', 'btnKx', 'btnKe', 'btnFwdBias',
     'btnRevDist', 'btnRevTime', 'btnRevBias', 'btnPause',
-    'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured'
+    'btnCalSteps', 'btnAutoCal', 'btnDistFactor', 'btnDistMeasured',
+    'btnFetchOnboardLog'
   ];
   ids.forEach(id => {
     const el = document.getElementById(id);
@@ -1466,10 +1733,25 @@ function handleTelemetryNotification(event) {
   if (raw.startsWith('STOP:')) {
     logMsg(`STOPPED: ${raw.substring(5)}`, 'warn');
     updatePhaseBadge('DONE');
+    if (currentRunSession && currentRunSession.active) {
+      finalizeRunSession(raw.substring(5));
+    }
     return;
   }
   if (raw.startsWith('CFG:')) {
     parseConfigPacket(raw);
+    return;
+  }
+  if (raw.startsWith('LOG_START:')) {
+    handleLogStart(raw);
+    return;
+  }
+  if (raw.startsWith('LOG_D:')) {
+    handleLogData(raw);
+    return;
+  }
+  if (raw.startsWith('LOG_END:')) {
+    handleLogEnd(raw);
     return;
   }
 
@@ -1484,7 +1766,15 @@ function handleTelemetryNotification(event) {
     }
   });
 
+  const prevPhase = currentPhase;
   if (data.P) updatePhaseBadge(data.P);
+
+  // Check run session auto-trigger transitions
+  if ((prevPhase === 'IDLE' || prevPhase === 'WAIT_BUTTON' || prevPhase === 'DONE') && (data.P === 'FWD')) {
+    startNewRunSession('live');
+  } else if (currentRunSession && currentRunSession.active && data.P === 'DONE') {
+    finalizeRunSession('Run completed (DONE phase reached)');
+  }
 
   // Distance in meters
   if (data.D !== undefined) {
@@ -1636,6 +1926,28 @@ function handleTelemetryNotification(event) {
     if (elR) elR.textContent = ticksB.toLocaleString();
     if (elAvg) elAvg.textContent = avg.toLocaleString();
     if (elFactor) elFactor.textContent = calFactor.toFixed(2);
+  }
+
+  // Live steering influence terms
+  if (data.KC !== undefined) {
+    const kc = parseFloat(data.KC) || 0.0;
+    const el = document.getElementById('liveGyroCorrVal');
+    if (el) el.textContent = `Gyro: ${(kc >= 0 ? '+' : '')}${kc.toFixed(1)}`;
+  }
+  if (data.EC !== undefined) {
+    const ec = parseFloat(data.EC) || 0.0;
+    const el = document.getElementById('liveEncTrimVal');
+    if (el) el.textContent = `Enc: ${(ec >= 0 ? '+' : '')}${ec.toFixed(1)}`;
+  }
+  if (data.TH !== undefined) {
+    const th = parseFloat(data.TH) || 0.0;
+    const el = document.getElementById('liveTargetHeadBadge');
+    if (el) el.textContent = `Tgt H: ${(th >= 0 ? '+' : '')}${th.toFixed(1)}°`;
+  }
+
+  // Record active live run telemetry
+  if (currentRunSession && currentRunSession.active && (currentPhase === 'FWD' || currentPhase === 'PAUSE' || currentPhase === 'REV')) {
+    recordLiveSample(data);
   }
 
   addChartPoint(currentDistM, currentSpeedMps, currentHeadingDeg);
@@ -2063,6 +2375,531 @@ function updateEstimates() {
   const fTravel = Math.max(fDist - CAR_LENGTH_M, 0.05);
   document.getElementById('dispDistTarget').textContent = fTravel.toFixed(3);
   currentTargetM = fTravel;
+}
+
+// ----------------------------------------------------
+// Run Telemetry Session Manager & LLM Diagnostics Engine
+// ----------------------------------------------------
+let currentRunSession = {
+  active: false,
+  source: 'standby',
+  runNumber: 0,
+  startTime: null,
+  stopReason: '',
+  params: {},
+  samples: [],
+  summary: null
+};
+
+let runCounter = 0;
+let onboardLogBuffer = [];
+let onboardLogExpected = 0;
+
+function startNewRunSession(source = 'live') {
+  runCounter++;
+  currentRunSession = {
+    active: true,
+    source: source,
+    runNumber: runCounter,
+    startTime: new Date(),
+    stopReason: '',
+    params: {
+      distFwd: parseFloat(document.getElementById('inpFwdDist').value) || 1.0,
+      distRev: parseFloat(document.getElementById('inpRevDist').value) || 1.0,
+      timeFwd: parseFloat(document.getElementById('inpFwdTime').value) || 10.0,
+      timeRev: parseFloat(document.getElementById('inpRevTime').value) || 10.0,
+      totalTime: parseFloat(document.getElementById('inpTotalTime').value) || 0.0,
+      kpHeading: parseFloat(document.getElementById('inpKp').value) || 28.0,
+      kxCrossTrack: parseFloat(document.getElementById('inpKx').value) || 50.0,
+      keEncTrim: parseFloat(document.getElementById('inpKe').value) || 0.2,
+      biasFwd: parseFloat(document.getElementById('inpFwdBias').value) || 0.0,
+      biasRev: parseFloat(document.getElementById('inpRevBias').value) || 0.0,
+      pauseMs: parseFloat(document.getElementById('inpPause').value) || 500,
+      maxSpeedMps: parseFloat(document.getElementById('inpMaxV').value) || 0.75,
+      distFactor: parseFloat(document.getElementById('inpDistFactor').value) || 1.0,
+      ticksPerMeter: currentCalibration,
+      bottleM: parseFloat(document.getElementById('inpBottle').value) || 0.0,
+      catchV: parseFloat(document.getElementById('inpCatchV').value) || 0.3,
+      carLengthM: CAR_LENGTH_M
+    },
+    samples: [],
+    summary: null
+  };
+
+  updateSessionBadge('recording', `RECORDING RUN #${runCounter} (LIVE)`);
+  document.getElementById('btnDownloadLLM').disabled = true;
+  document.getElementById('btnCopyLLM').disabled = true;
+  document.getElementById('btnDownloadCSV').disabled = true;
+  document.getElementById('btnDownloadJSON').disabled = true;
+  logMsg(`Run #${runCounter} started. Logging high-resolution telemetry...`, 'info');
+}
+
+function recordLiveSample(data) {
+  const sample = {
+    timeMs: parseInt(data.E, 10) || 0,
+    phase: data.P || currentPhase,
+    distM: currentDistM,
+    targetM: currentTargetM,
+    speedMps: currentSpeedMps,
+    headingDeg: currentHeadingDeg,
+    targetHeadingDeg: parseFloat(data.TH) || 0.0,
+    gyroRateDps: currentGyroZ,
+    crossTrackMm: parseFloat(data.X) || 0.0,
+    leftTicks: parseInt(data.L, 10) || 0,
+    rightTicks: parseInt(data.R, 10) || 0,
+    deltaTicks: (parseInt(data.L, 10) || 0) - (parseInt(data.R, 10) || 0),
+    leftSteps: parseInt(data.SL, 10) || 0,
+    rightSteps: parseInt(data.SR, 10) || 0,
+    kpCorrSps: parseFloat(data.KC) || 0.0,
+    encCorrSps: parseFloat(data.EC) || 0.0,
+    compLeft: parseFloat(data.CL) || 1.0,
+    compRight: parseFloat(data.CR) || 1.0,
+    trackLPct: parseFloat(data.WL) || 100,
+    trackRPct: parseFloat(data.WR) || 100,
+    batteryV: currentBatteryV
+  };
+  currentRunSession.samples.push(sample);
+
+  if (currentRunSession.samples.length % 5 === 0) {
+    updateSessionBadge('recording', `REC #${currentRunSession.runNumber} (${currentRunSession.samples.length} pts)`);
+  }
+}
+
+function finalizeRunSession(reason = 'Completed') {
+  if (!currentRunSession || currentRunSession.samples.length === 0) return;
+  currentRunSession.active = false;
+  currentRunSession.stopReason = reason;
+
+  const samples = currentRunSession.samples;
+  const p = currentRunSession.params;
+
+  // Compute statistical summary
+  const lastSample = samples[samples.length - 1];
+  const totalDurationS = (lastSample.timeMs / 1000.0) || 0.0;
+  const finalDistM = lastSample.distM || 0.0;
+  const finalTargetM = lastSample.targetM || (p.distFwd - p.carLengthM);
+  const distErrorMm = (finalDistM - finalTargetM) * 1000.0;
+
+  let maxHeading = -999, minHeading = 999, sumHeadingSq = 0;
+  let maxCrossTrackMm = 0;
+  let maxGyroCorr = 0, sumGyroCorr = 0;
+  let maxEncTrim = 0, sumEncTrim = 0;
+  let minTrackL = 100, minTrackR = 100;
+  let minVolt = 99, restVolt = samples[0].batteryV || 12.0;
+
+  samples.forEach(s => {
+    if (s.headingDeg > maxHeading) maxHeading = s.headingDeg;
+    if (s.headingDeg < minHeading) minHeading = s.headingDeg;
+    sumHeadingSq += s.headingDeg * s.headingDeg;
+
+    if (Math.abs(s.crossTrackMm) > maxCrossTrackMm) maxCrossTrackMm = Math.abs(s.crossTrackMm);
+
+    const gCorr = Math.abs(s.kpCorrSps);
+    if (gCorr > maxGyroCorr) maxGyroCorr = gCorr;
+    sumGyroCorr += gCorr;
+
+    const eTrim = Math.abs(s.encCorrSps);
+    if (eTrim > maxEncTrim) maxEncTrim = eTrim;
+    sumEncTrim += eTrim;
+
+    if (s.trackLPct > 0 && s.trackLPct < minTrackL) minTrackL = s.trackLPct;
+    if (s.trackRPct > 0 && s.trackRPct < minTrackR) minTrackR = s.trackRPct;
+
+    if (s.batteryV > 0 && s.batteryV < minVolt) minVolt = s.batteryV;
+  });
+
+  const rmsHeading = Math.sqrt(sumHeadingSq / samples.length);
+  const avgGyroCorr = sumGyroCorr / samples.length;
+  const avgEncTrim = sumEncTrim / samples.length;
+  const voltSag = restVolt - (minVolt === 99 ? restVolt : minVolt);
+
+  currentRunSession.summary = {
+    durationS: totalDurationS,
+    finalDistM: finalDistM,
+    finalTargetM: finalTargetM,
+    distErrorMm: distErrorMm,
+    finalHeadingDeg: lastSample.headingDeg,
+    maxHeadingDeg: maxHeading,
+    minHeadingDeg: minHeading,
+    rmsHeadingDeg: rmsHeading,
+    finalCrossTrackMm: lastSample.crossTrackMm,
+    maxCrossTrackMm: maxCrossTrackMm,
+    maxGyroCorrSps: maxGyroCorr,
+    avgGyroCorrSps: avgGyroCorr,
+    maxEncTrimSps: maxEncTrim,
+    avgEncTrimSps: avgEncTrim,
+    minTrackLPct: minTrackL === 100 && lastSample.trackLPct > 0 ? lastSample.trackLPct : minTrackL,
+    minTrackRPct: minTrackR === 100 && lastSample.trackRPct > 0 ? lastSample.trackRPct : minTrackR,
+    finalDeltaTicks: lastSample.deltaTicks,
+    restVolt: restVolt,
+    minVolt: minVolt === 99 ? restVolt : minVolt,
+    voltSag: voltSag,
+    sampleCount: samples.length
+  };
+
+  updateDiagnosticsUI(currentRunSession);
+  updateSessionBadge('ready', `✓ RUN #${currentRunSession.runNumber} SAVED (${samples.length} PTS)`);
+
+  document.getElementById('btnDownloadLLM').disabled = false;
+  document.getElementById('btnCopyLLM').disabled = false;
+  document.getElementById('btnDownloadCSV').disabled = false;
+  document.getElementById('btnDownloadJSON').disabled = false;
+
+  updateLLMPreview(currentRunSession);
+  logMsg(`Run #${currentRunSession.runNumber} telemetry finalized (${samples.length} samples, err: ${distErrorMm.toFixed(1)}mm). Ready for LLM export.`, 'ok');
+}
+
+function updateSessionBadge(state, text) {
+  const badge = document.getElementById('sessionStatusBadge');
+  if (!badge) return;
+  badge.textContent = text;
+  badge.className = `session-status-badge mono ${state}`;
+}
+
+function updateDiagnosticsUI(session) {
+  const s = session.summary;
+  const p = session.params;
+  if (!s) return;
+
+  document.getElementById('diagDistVal').textContent = `${s.finalDistM.toFixed(3)} / ${s.finalTargetM.toFixed(3)} m`;
+  const errPrefix = s.distErrorMm >= 0 ? '+' : '';
+  const distErrEl = document.getElementById('diagDistErr');
+  distErrEl.textContent = `Err: ${errPrefix}${s.distErrorMm.toFixed(1)} mm (${s.distErrorMm >= 0 ? 'overshoot' : 'short'})`;
+  distErrEl.style.color = Math.abs(s.distErrorMm) < 15 ? 'var(--status-ready)' : 'var(--status-warn)';
+
+  document.getElementById('diagTimeVal').textContent = `${s.durationS.toFixed(2)} s`;
+  const timeTgt = p.totalTime > 0 ? p.totalTime : p.timeFwd;
+  document.getElementById('diagTimeTarget').textContent = `Target: ${timeTgt.toFixed(2)} s (Δ ${(s.durationS - timeTgt).toFixed(2)} s)`;
+
+  const hSign = s.finalHeadingDeg >= 0 ? '+' : '';
+  document.getElementById('diagHeadingVal').textContent = `${hSign}${s.finalHeadingDeg.toFixed(1)}° / ${s.maxHeadingDeg.toFixed(1)}°`;
+  document.getElementById('diagHeadingSub').textContent = `RMS: ${s.rmsHeadingDeg.toFixed(2)}°`;
+
+  const xtSign = s.finalCrossTrackMm >= 0 ? '+' : '';
+  document.getElementById('diagCrossTrackVal').textContent = `${xtSign}${s.finalCrossTrackMm.toFixed(0)} mm`;
+  document.getElementById('diagCrossTrackMax').textContent = `Peak offset: ${s.maxCrossTrackMm.toFixed(0)} mm`;
+
+  document.getElementById('diagSensorTrimVal').textContent = `G: ±${s.maxGyroCorrSps.toFixed(1)} · E: ±${s.maxEncTrimSps.toFixed(1)}`;
+  document.getElementById('diagSensorTrimSub').textContent = `Avg G: ${s.avgGyroCorrSps.toFixed(1)} st/s, E: ${s.avgEncTrimSps.toFixed(1)} st/s`;
+
+  document.getElementById('diagTrackingVal').textContent = `L: ${s.minTrackLPct.toFixed(0)}% / R: ${s.minTrackRPct.toFixed(0)}%`;
+  const dtSign = s.finalDeltaTicks >= 0 ? '+' : '';
+  document.getElementById('diagDeltaTicks').textContent = `Δticks: ${dtSign}${s.finalDeltaTicks} · Sag: -${s.voltSag.toFixed(2)}V`;
+
+  // Rule-based diagnostic suggestions
+  generateHeuristicAdvice(session);
+}
+
+function generateHeuristicAdvice(session) {
+  const s = session.summary;
+  const p = session.params;
+  const adviceList = [];
+
+  // Distance advice
+  if (Math.abs(s.distErrorMm) > 8.0 && s.finalDistM > 0.1) {
+    const recommendedFactor = p.distFactor * (s.finalTargetM / s.finalDistM);
+    adviceList.push(`• <b>Distance Offset:</b> Vehicle ${s.distErrorMm > 0 ? 'overshot by' : 'stopped short by'} ${Math.abs(s.distErrorMm).toFixed(1)} mm. Recommend adjusting <code>DIST_FACTOR</code> from ${p.distFactor.toFixed(4)} → <b>${recommendedFactor.toFixed(4)}</b>.`);
+  } else {
+    adviceList.push(`• <b>Distance Calibration:</b> Excellent stopping precision (error within ${Math.abs(s.distErrorMm).toFixed(1)} mm).`);
+  }
+
+  // Heading & Drift advice
+  if (Math.abs(s.finalHeadingDeg) > 0.8 || s.rmsHeadingDeg > 1.5) {
+    adviceList.push(`• <b>Heading Drift:</b> Vehicle yawed ${s.finalHeadingDeg > 0 ? 'Left' : 'Right'} (${s.finalHeadingDeg.toFixed(1)}°, RMS ${s.rmsHeadingDeg.toFixed(2)}°). If initial launch kick was the cause, boost <code>KP_HEADING</code> (current ${p.kpHeading}). If drift was continuous, adjust <code>FORWARD_BIAS</code>.`);
+  }
+
+  // Cross-track advice
+  if (s.maxCrossTrackMm > 25.0) {
+    adviceList.push(`• <b>Lateral Offset:</b> Max cross-track deviation reached ${s.maxCrossTrackMm.toFixed(0)} mm. Boost <code>KX</code> (current ${p.kxCrossTrack}) to aim back toward center line faster.`);
+  }
+
+  // Traction / Wheel lag advice
+  if (s.minTrackLPct < 92 || s.minTrackR < 92 || Math.abs(s.minTrackLPct - s.minTrackR) > 5) {
+    adviceList.push(`• <b>Traction / Slip Warning:</b> Asymmetric wheel tracking (L: ${s.minTrackLPct.toFixed(0)}%, R: ${s.minTrackR.toFixed(0)}%). The lower wheel is experiencing slip or skipped steps. Check tire traction, coupler tightness, or shift battery weight toward the slipping side.`);
+  }
+
+  // Voltage sag
+  if (s.voltSag > 1.2) {
+    adviceList.push(`• <b>Battery Rail Sag:</b> Voltage sagged by ${s.voltSag.toFixed(2)} V under acceleration (dropped to ${s.minVolt.toFixed(2)} V). Consider reducing acceleration or charging NiMH cells.`);
+  }
+
+  document.getElementById('adviceContent').innerHTML = adviceList.join('<br>');
+}
+
+async function fetchCarOnboardLog() {
+  if (!isConnected || !cmdChar) {
+    alert('Please connect to the vehicle over Bluetooth first.');
+    return;
+  }
+  onboardLogBuffer = [];
+  onboardLogExpected = 0;
+  updateSessionBadge('recording', 'REQUESTING ONBOARD LOG...');
+  logMsg('Requesting onboard 20Hz run telemetry from vehicle (LOG_DUMP)...', 'info');
+  await sendRawCommand('LOG_DUMP');
+}
+
+function handleLogStart(raw) {
+  const parts = raw.split(':');
+  onboardLogExpected = parseInt(parts[1], 10) || 0;
+  onboardLogBuffer = [];
+  updateSessionBadge('recording', `IMPORTING LOG (0 / ${onboardLogExpected})...`);
+  logMsg(`Receiving ${onboardLogExpected} onboard telemetry samples...`, 'info');
+}
+
+function handleLogData(raw) {
+  const line = raw.replace('LOG_D:', '');
+  const v = line.split(',');
+  if (v.length < 19) return;
+
+  const idx = parseInt(v[0], 10);
+  const phaseMap = { 1: 'FWD', 2: 'PAUSE', 3: 'REV', 4: 'DONE' };
+  const phaseCode = parseInt(v[2], 10);
+
+  const sample = {
+    timeMs: parseInt(v[1], 10) || 0,
+    phase: phaseMap[phaseCode] || 'RUN',
+    distM: (parseInt(v[3], 10) || 0) / 1000.0,
+    targetM: (parseInt(v[4], 10) || 0) / 1000.0,
+    speedMps: (parseInt(v[5], 10) || 0) / 100.0,
+    headingDeg: (parseInt(v[6], 10) || 0) / 100.0,
+    targetHeadingDeg: (parseInt(v[7], 10) || 0) / 100.0,
+    gyroRateDps: (parseInt(v[8], 10) || 0) / 100.0,
+    crossTrackMm: parseInt(v[9], 10) || 0,
+    leftTicks: parseInt(v[10], 10) || 0,
+    rightTicks: parseInt(v[11], 10) || 0,
+    deltaTicks: (parseInt(v[10], 10) || 0) - (parseInt(v[11], 10) || 0),
+    leftSteps: parseInt(v[12], 10) || 0,
+    rightSteps: parseInt(v[13], 10) || 0,
+    kpCorrSps: parseInt(v[14], 10) || 0,
+    encCorrSps: parseInt(v[15], 10) || 0,
+    compLeft: 1.0,
+    compRight: 1.0,
+    trackLPct: parseInt(v[16], 10) || 100,
+    trackRPct: parseInt(v[17], 10) || 100,
+    batteryV: (parseInt(v[18], 10) || 12000) / 1000.0
+  };
+
+  onboardLogBuffer.push(sample);
+
+  if (onboardLogBuffer.length % 20 === 0 || onboardLogBuffer.length === onboardLogExpected) {
+    updateSessionBadge('recording', `IMPORTING LOG (${onboardLogBuffer.length} / ${onboardLogExpected})...`);
+  }
+}
+
+function handleLogEnd(raw) {
+  if (onboardLogBuffer.length === 0) {
+    logMsg('Onboard log buffer was empty.', 'warn');
+    updateSessionBadge('standby', 'RECORDER STANDBY');
+    return;
+  }
+
+  startNewRunSession('onboard');
+  currentRunSession.samples = onboardLogBuffer;
+  finalizeRunSession('Onboard 20Hz High-Resolution Run Log');
+  updateSessionBadge('ready', `✓ ONBOARD 20Hz LOG (${onboardLogBuffer.length} PTS)`);
+  logMsg(`Imported ${onboardLogBuffer.length} high-resolution onboard samples from vehicle!`, 'ok');
+}
+
+function generateLLMReportMarkdown(session) {
+  if (!session || !session.summary) return '';
+  const s = session.summary;
+  const p = session.params;
+  const samples = session.samples;
+
+  const nowIso = new Date().toISOString();
+  let md = `# Science Olympiad Electric Vehicle (2026-27) — Run Telemetry & Diagnostic Report
+Generated: ${nowIso}
+Run Session: #${session.runNumber} (${session.source === 'onboard' ? 'Onboard 20Hz High-Res Memory' : 'Live 10Hz BLE Telemetry'})
+Run Outcome: ${session.stopReason}
+
+## LLM System Persona & Analysis Prompt
+> **Instructions for the AI Assistant / LLM:**
+> You are an elite Science Olympiad Electric Vehicle coach, control systems engineer, and roboticist.
+> Analyze the telemetry data below from an autonomous dual-stepper EV with closed-loop MPU-6050 gyro and dual AS5600 4096-tick magnetic wheel encoders.
+> The vehicle operates under push-reverse rules (driving forward, pushing a bottle past a line, pausing, reversing, and stopping at a Target Point).
+>
+> **Your Task:**
+> 1. **Trajectory & Drift Analysis:** Diagnose whether lateral drift or yaw angle was caused by launch jerk, tire slip, weight imbalance, gyro thermal bias, or steering bias.
+> 2. **Control Loop Tuning:** Evaluate whether \`KP_HEADING\` (${p.kpHeading}) and \`KX\` (${p.kxCrossTrack}) are responsive, under-damped, or oscillating, and whether encoder differential trim \`KE\` (${p.keEncTrim}) balanced the wheels effectively without fighting gyro turns.
+> 3. **Pacing & Deceleration:** Check if the distance-based ramp-down reached the Target Point accurately and recommend specific adjustments to \`DIST_FACTOR\` (${p.distFactor}), \`TIME_F\` / \`TIME_R\`, or \`MAX_V\`.
+> 4. **Concrete Actionable Recommendations:** Provide exact, numbered parameter changes to enter into the dashboard for the next run.
+
+---
+
+## 1. Vehicle Configuration Snapshot
+| Parameter | Setting | Unit | Description |
+|---|---|---|---|
+| Forward Distance (DIST_F) | ${p.distFwd.toFixed(3)} | m | Competition forward target distance |
+| Reverse Distance (DIST_R) | ${p.distRev.toFixed(3)} | m | Competition reverse target distance |
+| Net Commanded Travel | ${(p.distFwd - p.carLengthM).toFixed(3)} | m | Set distance minus car length (${p.carLengthM.toFixed(3)} m) |
+| Forward Leg Target Time | ${p.timeFwd.toFixed(2)} | s | Commanded forward duration |
+| Reverse Leg Target Time | ${p.timeRev.toFixed(2)} | s | Commanded reverse duration |
+| Total Run Target Time | ${p.totalTime.toFixed(2)} | s | Whole-run solver target (0 = legs set separately) |
+| Heading Gain (KP) | ${p.kpHeading.toFixed(1)} | st/s/° | Gyro proportional steering gain |
+| Cross-Track Gain (KX) | ${p.kxCrossTrack.toFixed(1)} | °/m | Sideways error correction gain |
+| Encoder Balance Gain (KE) | ${p.keEncTrim.toFixed(2)} | st/s/tick | Differential wheel tick balance trim |
+| Forward Bias (BIAS_F) | ${p.biasFwd.toFixed(1)} | st/s | Feedforward steering bias (+ steers right) |
+| Reverse Bias (BIAS_R) | ${p.biasRev.toFixed(1)} | st/s | Feedforward steering bias (+ steers right) |
+| Pause Duration | ${p.pauseMs} | ms | Pause time between forward and reverse |
+| Max Speed Cap (MAX_V) | ${p.maxSpeedMps.toFixed(3)} | m/s | Upper velocity clamp |
+| Distance Tuning Factor | ${p.distFactor.toFixed(4)} | mult | Real-world distance scale factor |
+| Encoder Calibration | ${p.ticksPerMeter.toFixed(1)} | ticks/m | AS5600 magnetic encoder calibration |
+| Bottle Catch Distance | ${p.bottleM.toFixed(3)} | m | Bottle pickup location (0 = disabled) |
+| Bottle Catch Speed | ${p.catchV.toFixed(2)} | m/s | Safe engagement speed |
+
+---
+
+## 2. Key Performance Metrics
+- **Total Run Elapsed Time:** ${s.durationS.toFixed(2)} s (vs target ${(p.totalTime > 0 ? p.totalTime : p.timeFwd).toFixed(2)} s)
+- **Stopping Distance Accuracy:** Command target ${s.finalTargetM.toFixed(3)} m vs Realized ${s.finalDistM.toFixed(3)} m (Error: ${s.distErrorMm >= 0 ? '+' : ''}${s.distErrorMm.toFixed(1)} mm)
+- **Heading Stability:**
+  - Final Stopping Yaw: ${s.finalHeadingDeg >= 0 ? '+' : ''}${s.finalHeadingDeg.toFixed(2)}°
+  - Max Yaw Deviation: +${s.maxHeadingDeg.toFixed(2)}° / ${s.minHeadingDeg.toFixed(2)}°
+  - RMS Yaw Error: ${s.rmsHeadingDeg.toFixed(2)}°
+- **Lateral Deviation (Cross-Track):**
+  - Final Offset from Center Line: ${s.finalCrossTrackMm >= 0 ? '+' : ''}${s.finalCrossTrackMm.toFixed(1)} mm (${s.finalCrossTrackMm >= 0 ? 'Left' : 'Right'})
+  - Peak Lateral Deviation: ${s.maxCrossTrackMm.toFixed(1)} mm
+- **Controller & Sensor Steering Influences:**
+  - Peak Gyro Correction: ±${s.maxGyroCorrSps.toFixed(1)} st/s (Mean: ${s.avgGyroCorrSps.toFixed(1)} st/s)
+  - Peak Encoder Differential Trim: ±${s.maxEncTrimSps.toFixed(1)} st/s (Mean: ${s.avgEncTrimSps.toFixed(1)} st/s)
+- **Traction & Stepper Health:**
+  - Lowest Wheel Tracking %: Left ${s.minTrackLPct.toFixed(0)}% vs Right ${s.minTrackRPct.toFixed(0)}%
+  - Final Encoder Tick Disparity: Δ ${s.finalDeltaTicks >= 0 ? '+' : ''}${s.finalDeltaTicks} ticks
+- **Power System (Rail Voltage Sag):**
+  - Rest Voltage: ${s.restVolt.toFixed(2)} V
+  - Minimum Voltage Under Load: ${s.minVolt.toFixed(2)} V (Sag: ${s.voltSag.toFixed(2)} V)
+
+---
+
+## 3. High-Resolution Telemetry Time-Series
+| Time (s) | Phase | Dist (m) | Speed (m/s) | Yaw (°) | Tgt Yaw (°) | Gyro Rate (dps) | XT (mm) | L Ticks | R Ticks | Δ Ticks | L Steps | R Steps | Gyro Corr (st/s) | Enc Trim (st/s) | L Track % | R Track % | Voltage (V) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+`;
+
+  const step = samples.length > 80 ? Math.ceil(samples.length / 60) : 1;
+  samples.forEach((pt, i) => {
+    const isTransition = i === 0 || i === samples.length - 1 || (i > 0 && pt.phase !== samples[i - 1].phase);
+    if (i % step === 0 || isTransition) {
+      md += `| ${(pt.timeMs / 1000.0).toFixed(2)} | ${pt.phase} | ${pt.distM.toFixed(3)} | ${pt.speedMps.toFixed(2)} | ${(pt.headingDeg >= 0 ? '+' : '')}${pt.headingDeg.toFixed(1)} | ${(pt.targetHeadingDeg >= 0 ? '+' : '')}${pt.targetHeadingDeg.toFixed(1)} | ${(pt.gyroRateDps >= 0 ? '+' : '')}${pt.gyroRateDps.toFixed(1)} | ${pt.crossTrackMm.toFixed(0)} | ${pt.leftTicks} | ${pt.rightTicks} | ${pt.deltaTicks} | ${pt.leftSteps} | ${pt.rightSteps} | ${(pt.kpCorrSps >= 0 ? '+' : '')}${pt.kpCorrSps.toFixed(1)} | ${(pt.encTrimSps >= 0 ? '+' : '')}${pt.encTrimSps.toFixed(1)} | ${pt.trackLPct.toFixed(0)}% | ${pt.trackRPct.toFixed(0)}% | ${pt.batteryV.toFixed(2)} |\n`;
+    }
+  });
+
+  md += `\n---\n\n## 4. Raw JSON Diagnostic Payload\n\`\`\`json\n` + JSON.stringify({
+    metadata: {
+      generated: nowIso,
+      runNumber: session.runNumber,
+      source: session.source,
+      stopReason: session.stopReason
+    },
+    parameters: p,
+    summary: s,
+    sampleCount: samples.length,
+    samples: samples
+  }, null, 2) + `\n\`\`\`\n`;
+
+  return md;
+}
+
+function copyLLMPrompt() {
+  if (!currentRunSession || !currentRunSession.summary) {
+    alert('Please record a run first or fetch the onboard log.');
+    return;
+  }
+  const md = generateLLMReportMarkdown(currentRunSession);
+  navigator.clipboard.writeText(md).then(() => {
+    const btn = document.getElementById('btnCopyLLM');
+    const old = btn.textContent;
+    btn.textContent = '✓ COPIED TO CLIPBOARD!';
+    btn.style.background = '#27523f';
+    setTimeout(() => { btn.textContent = old; btn.style.background = ''; }, 1800);
+    logMsg('Telemetry diagnostic report copied to clipboard. Ready to paste into LLM!', 'ok');
+  }).catch(err => {
+    alert('Failed to copy to clipboard: ' + err.message);
+  });
+}
+
+function downloadLLMReport() {
+  if (!currentRunSession || !currentRunSession.summary) {
+    alert('Please record a run first or fetch the onboard log.');
+    return;
+  }
+  const md = generateLLMReportMarkdown(currentRunSession);
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `SciolyEV_Run${currentRunSession.runNumber}_LLM_Report_${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+  logMsg('LLM markdown report downloaded.', 'ok');
+}
+
+function downloadRunCSV() {
+  if (!currentRunSession || currentRunSession.samples.length === 0) {
+    alert('No run telemetry samples available.');
+    return;
+  }
+  let csv = 'Time_s,Phase,Dist_m,Target_m,Speed_mps,Heading_deg,TargetHeading_deg,GyroRate_dps,CrossTrack_mm,LeftTicks,RightTicks,DeltaTicks,LeftSteps,RightSteps,GyroCorr_sps,EncTrim_sps,CompLeft,CompRight,TrackLeft_pct,TrackRight_pct,Battery_V\n';
+  currentRunSession.samples.forEach(s => {
+    csv += `${(s.timeMs / 1000.0).toFixed(3)},${s.phase},${s.distM.toFixed(4)},${s.targetM.toFixed(4)},${s.speedMps.toFixed(3)},${s.headingDeg.toFixed(2)},${s.targetHeadingDeg.toFixed(2)},${s.gyroRateDps.toFixed(2)},${s.crossTrackMm.toFixed(1)},${s.leftTicks},${s.rightTicks},${s.deltaTicks},${s.leftSteps},${s.rightSteps},${s.kpCorrSps.toFixed(2)},${s.encTrimSps.toFixed(2)},${s.compLeft.toFixed(3)},${s.compRight.toFixed(3)},${s.trackLPct.toFixed(1)},${s.trackRPct.toFixed(1)},${s.batteryV.toFixed(2)}\n`;
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `SciolyEV_Run${currentRunSession.runNumber}_Telemetry_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  logMsg('High-resolution run telemetry CSV downloaded.', 'ok');
+}
+
+function downloadRunJSON() {
+  if (!currentRunSession || currentRunSession.samples.length === 0) {
+    alert('No run telemetry samples available.');
+    return;
+  }
+  const payload = {
+    metadata: {
+      generated: new Date().toISOString(),
+      runNumber: currentRunSession.runNumber,
+      source: currentRunSession.source,
+      stopReason: currentRunSession.stopReason
+    },
+    parameters: currentRunSession.params,
+    summary: currentRunSession.summary,
+    samples: currentRunSession.samples
+  };
+  const jsonStr = JSON.stringify(payload, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `SciolyEV_Run${currentRunSession.runNumber}_Data_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  logMsg('Full JSON telemetry package downloaded.', 'ok');
+}
+
+function toggleLLMPreview() {
+  const box = document.getElementById('llmPreviewBox');
+  const arrow = document.getElementById('previewArrow');
+  if (box.style.display === 'none') {
+    box.style.display = 'block';
+    arrow.textContent = '▼';
+    if (currentRunSession && currentRunSession.summary) {
+      updateLLMPreview(currentRunSession);
+    }
+  } else {
+    box.style.display = 'none';
+    arrow.textContent = '▶';
+  }
+}
+
+function updateLLMPreview(session) {
+  const box = document.getElementById('llmPreviewBox');
+  if (!box) return;
+  box.textContent = generateLLMReportMarkdown(session);
 }
 
 // ----------------------------------------------------

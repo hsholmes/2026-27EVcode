@@ -162,3 +162,19 @@ User action items:
 
 PD gyro control (KD term), dynamic pacing speed-boost, stepper-coil audio tones.
 (Note: Closed-loop encoder differential trim was ported on 2026-10-01 per user request).
+
+## Run Telemetry & LLM Diagnostics (2026-10-06)
+
+- **Onboard RAM Recording (Firmware):** `PushReverseStepper.ino` records a 20 Hz sample buffer (`runSamples[600]`, ~19 KB RAM, up to 30 s) covering `FORWARD`, `PAUSE`, `REVERSE`, and `DONE`. Captures: elapsed ms, phase, factor-corrected distance, target distance, speed (cm/s), heading & target heading (centidegrees), gyro rate (centideg/s), cross-track offset (mm), left/right AS5600 encoder ticks, left/right commanded steps, live Gyro heading correction (`liveKpCorr` in st/s), live Encoder differential trim (`liveEncCorr` in st/s), wheel tracking % (L/R), and battery rail voltage (mV).
+- **BLE Live Telemetry:** `sendBLEStatus()` now includes `KC:` (gyro correction st/s), `EC:` (encoder trim st/s), `TH:` (cross-track target heading deg), and `SL:` / `SR:` (commanded steps L/R).
+- **Onboard Dump Protocol:** Command `LOG_DUMP` streams out `LOG_START:<count>`, then `LOG_D:...` lines with 15ms pacing, terminating with `LOG_END:<count>`. Can be triggered anytime after an offline run once reconnected.
+- **Dashboard Telemetry & LLM Analysis Card (`SciolyEV_Dashboard_v3.html`):**
+  - **Live Auto-Recorder:** Hooks into phase transitions (`WAIT_BUTTON` / `IDLE` → `FWD` starts, `DONE` or `STOP:` completes).
+  - **Live Steering Display:** Odometry card displays real-time `Gyro: ±X.X`, `Enc: ±X.X`, `Tgt H: ±X.X°`.
+  - **Pre-Flight Heuristic Diagnosis:** Computes stopping distance error (mm), duration pacing error (s), heading drift & RMS (°), cross-track peak (mm), controller trim peak (st/s), wheel tracking min % & disparity, and battery rail sag (ΔV).
+  - **One-Click Exports:**
+    - `🤖 DOWNLOAD LLM REPORT (.MD)`: Formatted with a specialized Science Olympiad EV coach system prompt, full vehicle configuration table, statistical metrics summary, downsampled time-series table, and raw JSON payload.
+    - `📋 COPY FOR LLM`: Copies the complete Markdown prompt + telemetry directly to clipboard for instant pasting into ChatGPT / Claude / Gemini.
+    - `📊 TELEMETRY CSV`: Full CSV spreadsheet with all columns and samples.
+    - `💾 JSON DATA`: Complete structured JSON payload.
+    - `📥 FETCH CAR ONBOARD LOG`: Pulls the 20 Hz onboard memory recording directly from the vehicle over BLE.
