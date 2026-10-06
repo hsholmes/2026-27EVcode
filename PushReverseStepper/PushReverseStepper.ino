@@ -1603,9 +1603,10 @@ void loop() {
       beginLegRamp();  // stallSpeedCap deliberately carries over from the forward leg
       phase = REVERSE;
       Serial.println("[RUN] Reverse leg starting...");
-      if (bleConnected) {
-        statusChar->setValue(String("STATUS:Running reverse!"));
-        statusChar->notify();
+        if (bleConnected) {
+          statusChar->setValue(String("STATUS:Running reverse!"));
+          statusChar->notify();
+        }
       }
     }
   } else if (phase == FORWARD || phase == REVERSE) {
