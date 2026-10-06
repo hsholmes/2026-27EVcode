@@ -612,6 +612,17 @@ unsigned long startTime = 0;  // start of the current leg (forward or reverse)
 unsigned long pauseStartTime = 0;
 double legStartLeftTicks = 0;
 double legStartRightTicks = 0;
+// Target (travel m) of the most recent leg, so PAUSE/DONE keep showing that
+// leg's distance against its own target instead of 0. 0 = no leg yet.
+float shownLegTargetM = 0.0;
+
+// Factor-corrected distance of the current/last leg, as telemetry shows it.
+float shownLegDistM() {
+  double dL = fabs(leftEnc.totalTicks - legStartLeftTicks);
+  double dR = fabs(rightEnc.totalTicks - legStartRightTicks);
+  return (float)((dL + dR) / 2.0 / ticksPerMeter) / rt_DIST_FACTOR;
+}
+
 bool hasImu = false;
 unsigned long finishElapsedMs = 0;  // leg elapsed time frozen at finishRun(), for telemetry in DONE
 float crossTrackM = 0.0;    // sideways offset from the line, + = left of it; carried across both legs
@@ -824,10 +835,13 @@ void startRunSequence() {
   runLogStartMs = millis();
   lastLogSampleMs = 0;
 
+  // Zero the odometry per run, so the dashboard's L/R ticks are this run's
+  // (they used to pile up across runs until a RESET).
   updateEncoder(leftEnc);
   updateEncoder(rightEnc);
-  legStartLeftTicks = leftEnc.totalTicks;
-  legStartRightTicks = rightEnc.totalTicks;
+  leftEnc.totalTicks = rightEnc.totalTicks = 0;
+  legStartLeftTicks = legStartRightTicks = 0;
+  shownLegTargetM = 0.0;
 
   stallSpeedCap = rt_MAX_SPEED;
   startLeg(FORWARD_STEP_CAP, FORWARD_ACCEL);
@@ -855,6 +869,7 @@ void resetRun() {
   rightEnc.totalTicks = 0;
   legStartLeftTicks = 0;
   legStartRightTicks = 0;
+  shownLegTargetM = 0.0;
   liveKpCorr = 0.0;
   liveEncCorr = 0.0;
   liveTargetHeading = 0.0;
@@ -1541,35 +1556,41 @@ void loop() {
         // and encoder control are active even if the button is held down.
       }
     }
-  } else if (phase == PAUSE) {
-    curTargetM = revTravelM();
-    liveKpCorr = 0.0;
-    liveEncCorr = 0.0;
-    liveTargetHeading = 0.0;
-    liveRampedSpeed = 0.0;
-    if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
-      lastLogSampleMs = millis();
-      RunSample& s = runSamples[runSampleCount++];
-      s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
-      s.phase = 2; // PAUSE
-      s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
-      s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
-      s.speedCps = 0;
-      s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
-      s.targetHeadingCdeg = 0;
-      s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
-      s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
-      s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
-      s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
-      s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
-      s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
-      s.kpCorrSps = 0;
-      s.encCorrSps = 0;
-      s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
-      s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
-      s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
+  } else if (phase == PAUSE || phase == DONE) {
+    // Keep showing the leg that just ended (live from its start ticks, so
+    // any roll after the stop shows up) instead of dropping to 0.
+    if (shownLegTargetM > 0) {
+      curDistM = shownLegDistM();
+      curTargetM = shownLegTargetM;
     }
-    if (now - pauseStartTime >= rt_PAUSE_MS) {
+    if (phase == PAUSE) {
+      liveKpCorr = 0.0;
+      liveEncCorr = 0.0;
+      liveTargetHeading = 0.0;
+      liveRampedSpeed = 0.0;
+      if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
+        lastLogSampleMs = millis();
+        RunSample& s = runSamples[runSampleCount++];
+        s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
+        s.phase = 2; // PAUSE
+        s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
+        s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
+        s.speedCps = 0;
+        s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
+        s.targetHeadingCdeg = 0;
+        s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
+        s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
+        s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
+        s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
+        s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
+        s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
+        s.kpCorrSps = 0;
+        s.encCorrSps = 0;
+        s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
+        s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
+        s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
+      }
+      if (now - pauseStartTime >= rt_PAUSE_MS) {
       startTime = millis();
       setDirection(false);
       updateEncoder(leftEnc);
@@ -1598,6 +1619,7 @@ void loop() {
     float travelM = isForward ? fwdTravelM() : revTravelM();
     float targetM = travelM * rt_DIST_FACTOR;
     curTargetM = travelM;
+    shownLegTargetM = travelM;
 
     // Encoder-measured distance for this leg - the authoritative stop
     // signal, computed before the speed target below since the decel
