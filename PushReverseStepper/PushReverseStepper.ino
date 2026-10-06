@@ -109,7 +109,7 @@ const float STEP_SAFETY_MARGIN = 1.3;
 // Forward-only mode for calibrating and tuning distance: the run ends
 // after the forward leg (no pause, no reverse). Set false to restore the
 // full push-reverse run.
-const bool FORWARD_ONLY = false;
+const bool FORWARD_ONLY = true;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
 // Top cruise speed (steps/sec), set from the dashboard with MAX_V:<m/s>
 // and saved in NVS. Everything speed-related - leg speeds, the total-time
@@ -612,6 +612,17 @@ unsigned long startTime = 0;  // start of the current leg (forward or reverse)
 unsigned long pauseStartTime = 0;
 double legStartLeftTicks = 0;
 double legStartRightTicks = 0;
+// Target (travel m) of the most recent leg, so PAUSE/DONE keep showing that
+// leg's distance against its own target instead of 0. 0 = no leg yet.
+float shownLegTargetM = 0.0;
+
+// Factor-corrected distance of the current/last leg, as telemetry shows it.
+float shownLegDistM() {
+  double dL = fabs(leftEnc.totalTicks - legStartLeftTicks);
+  double dR = fabs(rightEnc.totalTicks - legStartRightTicks);
+  return (float)((dL + dR) / 2.0 / ticksPerMeter) / rt_DIST_FACTOR;
+}
+
 bool hasImu = false;
 unsigned long finishElapsedMs = 0;  // leg elapsed time frozen at finishRun(), for telemetry in DONE
 float crossTrackM = 0.0;    // sideways offset from the line, + = left of it; carried across both legs
@@ -746,10 +757,13 @@ void startRunSequence() {
   setDirection(true);
   armMotors(true);
 
+  // Zero the odometry per run, so the dashboard's L/R ticks are this run's
+  // (they used to pile up across runs until a RESET).
   updateEncoder(leftEnc);
   updateEncoder(rightEnc);
-  legStartLeftTicks = leftEnc.totalTicks;
-  legStartRightTicks = rightEnc.totalTicks;
+  leftEnc.totalTicks = rightEnc.totalTicks = 0;
+  legStartLeftTicks = legStartRightTicks = 0;
+  shownLegTargetM = 0.0;
 
   stallSpeedCap = rt_MAX_SPEED;
   startLeg(FORWARD_STEP_CAP, FORWARD_ACCEL);
@@ -777,6 +791,7 @@ void resetRun() {
   rightEnc.totalTicks = 0;
   legStartLeftTicks = 0;
   legStartRightTicks = 0;
+  shownLegTargetM = 0.0;
 
   recalcRoute();
 
@@ -1417,9 +1432,14 @@ void loop() {
         // and encoder control are active even if the button is held down.
       }
     }
-  } else if (phase == PAUSE) {
-    curTargetM = revTravelM();
-    if (now - pauseStartTime >= rt_PAUSE_MS) {
+  } else if (phase == PAUSE || phase == DONE) {
+    // Keep showing the leg that just ended (live from its start ticks, so
+    // any roll after the stop shows up) instead of dropping to 0.
+    if (shownLegTargetM > 0) {
+      curDistM = shownLegDistM();
+      curTargetM = shownLegTargetM;
+    }
+    if (phase == PAUSE && now - pauseStartTime >= rt_PAUSE_MS) {
       startTime = millis();
       setDirection(false);
       updateEncoder(leftEnc);
@@ -1448,6 +1468,7 @@ void loop() {
     float travelM = isForward ? fwdTravelM() : revTravelM();
     float targetM = travelM * rt_DIST_FACTOR;
     curTargetM = travelM;
+    shownLegTargetM = travelM;
 
     // Encoder-measured distance for this leg - the authoritative stop
     // signal, computed before the speed target below since the decel
