@@ -2626,11 +2626,32 @@ function generateHeuristicAdvice(session) {
   document.getElementById('adviceContent').innerHTML = adviceList.join('<br>');
 }
 
+let logDumpTimeout = null;
+
+function finalizeOnboardLog() {
+  if (logDumpTimeout) {
+    clearTimeout(logDumpTimeout);
+    logDumpTimeout = null;
+  }
+  if (!onboardLogBuffer || onboardLogBuffer.length === 0) {
+    logMsg('Onboard log buffer was empty or no samples received.', 'warn');
+    updateSessionBadge('standby', 'RECORDER STANDBY');
+    return;
+  }
+
+  startNewRunSession('onboard');
+  currentRunSession.samples = onboardLogBuffer;
+  finalizeRunSession('Onboard 20Hz High-Resolution Run Log');
+  updateSessionBadge('ready', `✓ ONBOARD 20Hz LOG (${onboardLogBuffer.length} PTS)`);
+  logMsg(`Imported ${onboardLogBuffer.length} high-resolution onboard samples from vehicle!`, 'ok');
+}
+
 async function fetchCarOnboardLog() {
   if (!isConnected || !cmdChar) {
     alert('Please connect to the vehicle over Bluetooth first.');
     return;
   }
+  if (logDumpTimeout) clearTimeout(logDumpTimeout);
   onboardLogBuffer = [];
   onboardLogExpected = 0;
   updateSessionBadge('recording', 'REQUESTING ONBOARD LOG...');
@@ -2644,6 +2665,17 @@ function handleLogStart(raw) {
   onboardLogBuffer = [];
   updateSessionBadge('recording', `IMPORTING LOG (0 / ${onboardLogExpected})...`);
   logMsg(`Receiving ${onboardLogExpected} onboard telemetry samples...`, 'info');
+
+  if (logDumpTimeout) clearTimeout(logDumpTimeout);
+  logDumpTimeout = setTimeout(() => {
+    if (onboardLogBuffer.length > 0) {
+      logMsg(`Log dump watchdog: stream completed with ${onboardLogBuffer.length} samples. Finalizing...`, 'warn');
+      finalizeOnboardLog();
+    } else {
+      logMsg('Log dump timed out without sample data.', 'error');
+      updateSessionBadge('standby', 'DUMP TIMED OUT');
+    }
+  }, 7000);
 }
 
 function handleLogData(raw) {
@@ -2681,23 +2713,19 @@ function handleLogData(raw) {
 
   onboardLogBuffer.push(sample);
 
-  if (onboardLogBuffer.length % 20 === 0 || onboardLogBuffer.length === onboardLogExpected) {
-    updateSessionBadge('recording', `IMPORTING LOG (${onboardLogBuffer.length} / ${onboardLogExpected})...`);
+  if (onboardLogBuffer.length % 25 === 0 || onboardLogBuffer.length === onboardLogExpected) {
+    const pct = onboardLogExpected > 0 ? Math.round((onboardLogBuffer.length / onboardLogExpected) * 100) : 0;
+    updateSessionBadge('recording', `IMPORTING LOG (${onboardLogBuffer.length} / ${onboardLogExpected} · ${pct}%)...`);
+    logMsg(`Received ${onboardLogBuffer.length} / ${onboardLogExpected} samples (${pct}%)...`, 'info');
+  }
+
+  if (onboardLogExpected > 0 && onboardLogBuffer.length >= onboardLogExpected) {
+    finalizeOnboardLog();
   }
 }
 
 function handleLogEnd(raw) {
-  if (onboardLogBuffer.length === 0) {
-    logMsg('Onboard log buffer was empty.', 'warn');
-    updateSessionBadge('standby', 'RECORDER STANDBY');
-    return;
-  }
-
-  startNewRunSession('onboard');
-  currentRunSession.samples = onboardLogBuffer;
-  finalizeRunSession('Onboard 20Hz High-Resolution Run Log');
-  updateSessionBadge('ready', `✓ ONBOARD 20Hz LOG (${onboardLogBuffer.length} PTS)`);
-  logMsg(`Imported ${onboardLogBuffer.length} high-resolution onboard samples from vehicle!`, 'ok');
+  finalizeOnboardLog();
 }
 
 function generateLLMReportMarkdown(session) {

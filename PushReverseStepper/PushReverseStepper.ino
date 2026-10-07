@@ -690,7 +690,8 @@ const char* phaseName(RunPhase p);  // see the Encoder prototype note above - sa
 void reportLegTracking(const char* leg, double diffTicks = 0.0);
 void finishRun(const char* reason, double diffTicks = 0.0);
 void sendBLEStatus(float distM, float targetM, float compLeft = 1.0, float compRight = 1.0);
-void dumpRunLog();
+void startLogDump();
+void serviceLogDump();
 
 // Live controller telemetry terms for logging & BLE stream
 float liveKpCorr = 0.0;
@@ -725,6 +726,11 @@ int runSampleCount = 0;
 unsigned long lastLogSampleMs = 0;
 unsigned long runLogStartMs = 0;
 
+// Non-blocking log streaming state
+bool logDumpInProgress = false;
+int logDumpIndex = -1;
+unsigned long lastLogDumpSendMs = 0;
+
 // ============================================================
 // BLE Setup (ESP32 built-in BLEDevice stack)
 // UUIDs unchanged so the dashboard's connection logic doesn't need to
@@ -757,43 +763,103 @@ void sendVehicleConfig() {
   statusChar->notify();
 }
 
-void dumpRunLog() {
-  if (!bleConnected || statusChar == nullptr) {
-    Serial.println("[LOG] Cannot dump: BLE not connected");
+void startLogDump() {
+  if (phase == FORWARD || phase == REVERSE) {
+    if (bleConnected && statusChar != nullptr) {
+      statusChar->setValue(String("STATUS:Cannot dump log during active run"));
+      statusChar->notify();
+    }
+    Serial.println("[LOG] Refused log dump: vehicle actively running");
     return;
   }
   if (runSampleCount == 0) {
-    statusChar->setValue(String("STATUS:No onboard run data recorded"));
-    statusChar->notify();
+    if (bleConnected && statusChar != nullptr) {
+      statusChar->setValue(String("STATUS:No onboard run data recorded"));
+      statusChar->notify();
+    }
+    Serial.println("[LOG] No onboard run samples to dump");
     return;
   }
 
-  char header[80];
-  snprintf(header, sizeof(header), "LOG_START:%d", runSampleCount);
-  statusChar->setValue(String(header));
-  statusChar->notify();
-  delay(30);
+  // If BLE is not connected, dump directly to Serial for bench testing
+  if (!bleConnected || statusChar == nullptr) {
+    Serial.print("[LOG] Dumping ");
+    Serial.print(runSampleCount);
+    Serial.println(" samples to Serial:");
+    Serial.print("LOG_START:");
+    Serial.println(runSampleCount);
+    char buf[140];
+    for (int i = 0; i < runSampleCount; i++) {
+      const RunSample& s = runSamples[i];
+      snprintf(buf, sizeof(buf),
+               "LOG_D:%d,%u,%u,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%u,%d,%d,%u,%u,%u",
+               i, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
+               s.headingCdeg, s.targetHeadingCdeg, s.gyroRateCdeg, s.crossTrackMm,
+               (long)s.leftTicks, (long)s.rightTicks, s.leftSteps, s.rightSteps,
+               s.kpCorrSps, s.encCorrSps, s.trackLPct, s.trackRPct, s.railMv);
+      Serial.println(buf);
+    }
+    Serial.print("LOG_END:");
+    Serial.println(runSampleCount);
+    return;
+  }
 
-  char buf[128];
-  for (int i = 0; i < runSampleCount; i++) {
-    const RunSample& s = runSamples[i];
+  // Queue non-blocking transmission to be serviced in loop()
+  logDumpInProgress = true;
+  logDumpIndex = -1;
+  lastLogDumpSendMs = 0;
+  Serial.print("[LOG] Queued non-blocking log dump of ");
+  Serial.print(runSampleCount);
+  Serial.println(" samples over BLE...");
+}
+
+void serviceLogDump() {
+  if (!logDumpInProgress) return;
+
+  if (!bleConnected || statusChar == nullptr) {
+    logDumpInProgress = false;
+    Serial.println("[LOG] Aborted log dump: BLE disconnected");
+    return;
+  }
+
+  // Pace transmissions at 25ms per packet (giving BLE stack ample time to flush)
+  if (millis() - lastLogDumpSendMs < 25) return;
+  lastLogDumpSendMs = millis();
+
+  if (logDumpIndex == -1) {
+    char header[64];
+    snprintf(header, sizeof(header), "LOG_START:%d", runSampleCount);
+    statusChar->setValue(String(header));
+    statusChar->notify();
+    logDumpIndex = 0;
+    return;
+  }
+
+  if (logDumpIndex < runSampleCount) {
+    const RunSample& s = runSamples[logDumpIndex];
+    char buf[140];
     snprintf(buf, sizeof(buf),
              "LOG_D:%d,%u,%u,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%u,%d,%d,%u,%u,%u",
-             i, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
+             logDumpIndex, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
              s.headingCdeg, s.targetHeadingCdeg, s.gyroRateCdeg, s.crossTrackMm,
              (long)s.leftTicks, (long)s.rightTicks, s.leftSteps, s.rightSteps,
              s.kpCorrSps, s.encCorrSps, s.trackLPct, s.trackRPct, s.railMv);
     statusChar->setValue(String(buf));
     statusChar->notify();
-    delay(15);
+    logDumpIndex++;
+    return;
   }
 
-  snprintf(buf, sizeof(buf), "LOG_END:%d", runSampleCount);
-  statusChar->setValue(String(buf));
+  // Finalize stream
+  char endBuf[64];
+  snprintf(endBuf, sizeof(endBuf), "LOG_END:%d", runSampleCount);
+  statusChar->setValue(String(endBuf));
   statusChar->notify();
-  Serial.print("[LOG] Dumped ");
+  logDumpInProgress = false;
+  lastBLESend = millis();  // prevent immediate collision with sendBLEStatus
+  Serial.print("[LOG] Completed non-blocking log dump of ");
   Serial.print(runSampleCount);
-  Serial.println(" samples over BLE.");
+  Serial.println(" samples.");
 }
 
 // Starts the forward leg - shared by the physical button and the BLE
@@ -923,11 +989,12 @@ void handleCommand(const String& cmdIn) {
     return;
   }
   if (upperCmd == "LOG_DUMP" || upperCmd == "GET_LOG") {
-    dumpRunLog();
+    startLogDump();
     return;
   }
   if (upperCmd == "LOG_CLEAR") {
     runSampleCount = 0;
+    logDumpInProgress = false;
     if (bleConnected && statusChar != nullptr) {
       statusChar->setValue(String("STATUS:Onboard log cleared"));
       statusChar->notify();
@@ -1302,6 +1369,7 @@ const char* phaseName(RunPhase p) {
 //         R:<ticks> CL:<left mult> CR:<right mult> M:<armed 0/1> E:<leg elapsed ms>
 //         WL:<left track %> WR:<right track %> X:<cross-track mm>
 void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) {
+  if (logDumpInProgress) return;  // Suppress regular telemetry while dumping high-res log
   if (!bleConnected || statusChar == nullptr) return;
   if (millis() - lastBLESend < 100) return;
   lastBLESend = millis();
@@ -1849,6 +1917,10 @@ void loop() {
     }
   }
 
-  // Continuous telemetry stream, active in every phase including idle.
-  sendBLEStatus(curDistM, curTargetM, liveCompLeft, liveCompRight);
+  // Service asynchronous onboard log dump if requested, otherwise broadcast continuous telemetry
+  if (logDumpInProgress) {
+    serviceLogDump();
+  } else {
+    sendBLEStatus(curDistM, curTargetM, liveCompLeft, liveCompRight);
+  }
 }
