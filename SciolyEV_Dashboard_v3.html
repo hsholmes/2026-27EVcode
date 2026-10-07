@@ -2826,19 +2826,6 @@ Run Outcome: ${session.stopReason}
     }
   });
 
-  md += `\n---\n\n## 4. Raw JSON Diagnostic Payload\n\`\`\`json\n` + JSON.stringify({
-    metadata: {
-      generated: nowIso,
-      runNumber: session.runNumber,
-      source: session.source,
-      stopReason: session.stopReason
-    },
-    parameters: p,
-    summary: s,
-    sampleCount: samples.length,
-    samples: samples
-  }, null, 2) + `\n\`\`\`\n`;
-
   return md;
 }
 
