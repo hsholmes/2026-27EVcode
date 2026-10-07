@@ -2452,6 +2452,7 @@ function recordLiveSample(data) {
     rightSteps: parseInt(data.SR, 10) || 0,
     kpCorrSps: parseFloat(data.KC) || 0.0,
     encCorrSps: parseFloat(data.EC) || 0.0,
+    encTrimSps: parseFloat(data.EC) || 0.0,
     compLeft: parseFloat(data.CL) || 1.0,
     compRight: parseFloat(data.CR) || 1.0,
     trackLPct: parseFloat(data.WL) || 100,
@@ -2614,8 +2615,8 @@ function generateHeuristicAdvice(session) {
   }
 
   // Traction / Wheel lag advice
-  if (s.minTrackLPct < 92 || s.minTrackR < 92 || Math.abs(s.minTrackLPct - s.minTrackR) > 5) {
-    adviceList.push(`• <b>Traction / Slip Warning:</b> Asymmetric wheel tracking (L: ${s.minTrackLPct.toFixed(0)}%, R: ${s.minTrackR.toFixed(0)}%). The lower wheel is experiencing slip or skipped steps. Check tire traction, coupler tightness, or shift battery weight toward the slipping side.`);
+  if (s.minTrackLPct < 92 || s.minTrackRPct < 92 || Math.abs(s.minTrackLPct - s.minTrackRPct) > 5) {
+    adviceList.push(`• <b>Traction / Slip Warning:</b> Asymmetric wheel tracking (L: ${s.minTrackLPct.toFixed(0)}%, R: ${s.minTrackRPct.toFixed(0)}%). The lower wheel is experiencing slip or skipped steps. Check tire traction, coupler tightness, or shift battery weight toward the slipping side.`);
   }
 
   // Voltage sag
@@ -2704,6 +2705,7 @@ function handleLogData(raw) {
     rightSteps: parseInt(v[13], 10) || 0,
     kpCorrSps: parseInt(v[14], 10) || 0,
     encCorrSps: parseInt(v[15], 10) || 0,
+    encTrimSps: parseInt(v[15], 10) || 0,
     compLeft: 1.0,
     compRight: 1.0,
     trackLPct: parseInt(v[16], 10) || 100,
@@ -2808,7 +2810,19 @@ Run Outcome: ${session.stopReason}
   samples.forEach((pt, i) => {
     const isTransition = i === 0 || i === samples.length - 1 || (i > 0 && pt.phase !== samples[i - 1].phase);
     if (i % step === 0 || isTransition) {
-      md += `| ${(pt.timeMs / 1000.0).toFixed(2)} | ${pt.phase} | ${pt.distM.toFixed(3)} | ${pt.speedMps.toFixed(2)} | ${(pt.headingDeg >= 0 ? '+' : '')}${pt.headingDeg.toFixed(1)} | ${(pt.targetHeadingDeg >= 0 ? '+' : '')}${pt.targetHeadingDeg.toFixed(1)} | ${(pt.gyroRateDps >= 0 ? '+' : '')}${pt.gyroRateDps.toFixed(1)} | ${pt.crossTrackMm.toFixed(0)} | ${pt.leftTicks} | ${pt.rightTicks} | ${pt.deltaTicks} | ${pt.leftSteps} | ${pt.rightSteps} | ${(pt.kpCorrSps >= 0 ? '+' : '')}${pt.kpCorrSps.toFixed(1)} | ${(pt.encTrimSps >= 0 ? '+' : '')}${pt.encTrimSps.toFixed(1)} | ${pt.trackLPct.toFixed(0)}% | ${pt.trackRPct.toFixed(0)}% | ${pt.batteryV.toFixed(2)} |\n`;
+      const eTrim = Number(pt.encTrimSps ?? pt.encCorrSps ?? 0);
+      const kpCorr = Number(pt.kpCorrSps ?? 0);
+      const head = Number(pt.headingDeg ?? 0);
+      const tgtHead = Number(pt.targetHeadingDeg ?? 0);
+      const gRate = Number(pt.gyroRateDps ?? 0);
+      const xt = Number(pt.crossTrackMm ?? 0);
+      const dist = Number(pt.distM ?? 0);
+      const spd = Number(pt.speedMps ?? 0);
+      const trkL = Number(pt.trackLPct ?? 100);
+      const trkR = Number(pt.trackRPct ?? 100);
+      const batt = Number(pt.batteryV ?? 12.0);
+
+      md += `| ${(pt.timeMs / 1000.0).toFixed(2)} | ${pt.phase || ''} | ${dist.toFixed(3)} | ${spd.toFixed(2)} | ${(head >= 0 ? '+' : '')}${head.toFixed(1)} | ${(tgtHead >= 0 ? '+' : '')}${tgtHead.toFixed(1)} | ${(gRate >= 0 ? '+' : '')}${gRate.toFixed(1)} | ${xt.toFixed(0)} | ${pt.leftTicks ?? 0} | ${pt.rightTicks ?? 0} | ${pt.deltaTicks ?? 0} | ${pt.leftSteps ?? 0} | ${pt.rightSteps ?? 0} | ${(kpCorr >= 0 ? '+' : '')}${kpCorr.toFixed(1)} | ${(eTrim >= 0 ? '+' : '')}${eTrim.toFixed(1)} | ${trkL.toFixed(0)}% | ${trkR.toFixed(0)}% | ${batt.toFixed(2)} |\n`;
     }
   });
 
@@ -2869,7 +2883,22 @@ function downloadRunCSV() {
   }
   let csv = 'Time_s,Phase,Dist_m,Target_m,Speed_mps,Heading_deg,TargetHeading_deg,GyroRate_dps,CrossTrack_mm,LeftTicks,RightTicks,DeltaTicks,LeftSteps,RightSteps,GyroCorr_sps,EncTrim_sps,CompLeft,CompRight,TrackLeft_pct,TrackRight_pct,Battery_V\n';
   currentRunSession.samples.forEach(s => {
-    csv += `${(s.timeMs / 1000.0).toFixed(3)},${s.phase},${s.distM.toFixed(4)},${s.targetM.toFixed(4)},${s.speedMps.toFixed(3)},${s.headingDeg.toFixed(2)},${s.targetHeadingDeg.toFixed(2)},${s.gyroRateDps.toFixed(2)},${s.crossTrackMm.toFixed(1)},${s.leftTicks},${s.rightTicks},${s.deltaTicks},${s.leftSteps},${s.rightSteps},${s.kpCorrSps.toFixed(2)},${s.encTrimSps.toFixed(2)},${s.compLeft.toFixed(3)},${s.compRight.toFixed(3)},${s.trackLPct.toFixed(1)},${s.trackRPct.toFixed(1)},${s.batteryV.toFixed(2)}\n`;
+    const eTrim = Number(s.encTrimSps ?? s.encCorrSps ?? 0);
+    const kpCorr = Number(s.kpCorrSps ?? 0);
+    const head = Number(s.headingDeg ?? 0);
+    const tgtHead = Number(s.targetHeadingDeg ?? 0);
+    const gRate = Number(s.gyroRateDps ?? 0);
+    const xt = Number(s.crossTrackMm ?? 0);
+    const dist = Number(s.distM ?? 0);
+    const tgtDist = Number(s.targetM ?? 0);
+    const spd = Number(s.speedMps ?? 0);
+    const cL = Number(s.compLeft ?? 1.0);
+    const cR = Number(s.compRight ?? 1.0);
+    const trkL = Number(s.trackLPct ?? 100);
+    const trkR = Number(s.trackRPct ?? 100);
+    const batt = Number(s.batteryV ?? 12.0);
+
+    csv += `${((s.timeMs || 0) / 1000.0).toFixed(3)},${s.phase || ''},${dist.toFixed(4)},${tgtDist.toFixed(4)},${spd.toFixed(3)},${head.toFixed(2)},${tgtHead.toFixed(2)},${gRate.toFixed(2)},${xt.toFixed(1)},${s.leftTicks ?? 0},${s.rightTicks ?? 0},${s.deltaTicks ?? 0},${s.leftSteps ?? 0},${s.rightSteps ?? 0},${kpCorr.toFixed(2)},${eTrim.toFixed(2)},${cL.toFixed(3)},${cR.toFixed(3)},${trkL.toFixed(1)},${trkR.toFixed(1)},${batt.toFixed(2)}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
