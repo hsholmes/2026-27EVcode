@@ -50,6 +50,12 @@ const float TRIM_OPPOSING_MIN = 0.1;
 // harder than kpHeading and rocked at ~12 Hz when crawling.
 const float TRIM_FILTER_S = 0.3;
 
+// Turns: done when the gyro is within TURN_DONE_DEG of the target. The step
+// cap assumes a track width of up to MAX_TRACK_WIDTH_M, wider than the car.
+const float TURN_DONE_DEG = 0.05;
+const float MAX_TRACK_WIDTH_M = 0.40;
+const unsigned long TURN_SETTLE_MS = 100;
+
 // Timeout = this x the time the move should take, plus TIMEOUT_EXTRA_MS.
 const float TIMEOUT_FACTOR = 3.0;
 const unsigned long TIMEOUT_EXTRA_MS = 5000;
@@ -70,7 +76,7 @@ struct StallWindow {
 
 }  // namespace
 
-MoveReport driveStraight(float distanceM, float cruiseMps, bool forward) {
+MoveReport driveStraight(float distanceM, float cruiseMps, bool forward, float holdHeadingDeg) {
   MoveReport report = { MoveResult::Done, 0, 0, 0, 0, 0 };
   if (distanceM <= 0) return report;
 
@@ -83,7 +89,9 @@ MoveReport driveStraight(float distanceM, float cruiseMps, bool forward) {
   const float accelRate = max(tuning.accelMps2, 0.05f) * STEPS_PER_METER;  // st/s^2
   const long stepCap = (long)(targetM * STEPS_PER_METER * STEP_SAFETY_MARGIN) + 1;
 
-  const float startHeading = gyro::headingDeg();
+  // The line to drive along: holdHeadingDeg, not wherever the car happens to
+  // point now, so small turn errors don't add up from move to move.
+  const float holdHeading = holdHeadingDeg;
   const long startTicksL = encoders::leftTicks();
   const long startTicksR = encoders::rightTicks();
   float crossTrackM = 0.0;  // sideways offset from the start line, + = left
@@ -113,7 +121,7 @@ MoveReport driveStraight(float distanceM, float cruiseMps, bool forward) {
     long dLeftTicks = labs(encoders::leftTicks() - startTicksL);
     long dRightTicks = labs(encoders::rightTicks() - startTicksR);
     float avgLegM = (dLeftTicks + dRightTicks) / 2.0 / tuning.ticksPerMeter;
-    float headingRel = gyro::headingDeg() - startHeading;
+    float headingRel = gyro::headingDeg() - holdHeading;
 
     if (avgLegM >= targetM) {
       report.result = MoveResult::Done;
@@ -233,8 +241,88 @@ MoveReport driveStraight(float distanceM, float cruiseMps, bool forward) {
   long dL = labs(encoders::leftTicks() - startTicksL);
   long dR = labs(encoders::rightTicks() - startTicksR);
   report.distanceM = (dL + dR) / 2.0 / tuning.ticksPerMeter / tuning.distFactor;
-  report.headingErrDeg = gyro::headingDeg() - startHeading;
+  report.headingErrDeg = gyro::headingDeg() - holdHeading;
   report.crossTrackMm = crossTrackM * 1000.0;
+  return report;
+}
+
+MoveReport spin(float targetHeadingDeg, float maxWheelMps) {
+  MoveReport report = { MoveResult::Done, 0, 0, 0, 0, 0 };
+  if (!gyro::available()) {
+    report.result = MoveResult::NoGyro;
+    return report;
+  }
+
+  if (tuning.rezeroBeforeMove) gyro::rezero();
+
+  const float startHeading = gyro::headingDeg();
+  const float turnDeg = targetHeadingDeg - startHeading;
+  if (fabs(turnDeg) <= TURN_DONE_DEG) {
+    report.headingErrDeg = -turnDeg;
+    return report;
+  }
+  const bool left = turnDeg > 0;  // + heading = nose turned left
+
+  const float cruise = constrain(maxWheelMps * STEPS_PER_METER, MIN_SAFE_SPEED, MAX_SPEED);
+  const float accelRate = max(tuning.accelMps2, 0.05f) * STEPS_PER_METER;
+  // The gyro decides when the turn is done; the cap (sized for a car much
+  // wider than this one) only stops the wheels if it never says so.
+  const float capArcM = MAX_TRACK_WIDTH_M / 2.0 * fabs(turnDeg) * DEG_TO_RAD;
+  const long stepCap = (long)(capArcM * STEPS_PER_METER * STEP_SAFETY_MARGIN) + 400;
+  const unsigned long timeoutMs = (unsigned long)(capArcM / (MIN_SAFE_SPEED / STEPS_PER_METER) * 1000.0) + TIMEOUT_EXTRA_MS;
+
+  // Spin in place: turning left = left wheel backward, right wheel forward.
+  steppers::setDirections(!left, left);
+  steppers::enable(true);
+  steppers::start(stepCap, stepCap, accelRate * WHEEL_SLEW_FACTOR);
+
+  const long startTicksL = encoders::leftTicks();
+  const long startTicksR = encoders::rightTicks();
+  const unsigned long startMs = millis();
+  unsigned long lastPrintMs = 0;
+
+  for (;;) {
+    float heading = gyro::headingDeg();
+    float remainingDeg = left ? targetHeadingDeg - heading : heading - targetHeadingDeg;
+
+    if (remainingDeg <= TURN_DONE_DEG) {
+      report.result = MoveResult::Done;
+      break;
+    }
+    if (!steppers::running()) {
+      report.result = MoveResult::StepCap;
+      break;
+    }
+    if (millis() - startMs > timeoutMs) {
+      report.result = MoveResult::Timeout;
+      break;
+    }
+
+    // Ramp up by time; slow down in proportion to the angle left, so the
+    // car creeps onto the target instead of overshooting it. No track
+    // width needed - the gyro measures the turn directly.
+    float rampElapsedS = (millis() - startMs) / 1000.0;
+    float speed = constrain(MIN_SAFE_SPEED + accelRate * rampElapsedS, MIN_SAFE_SPEED, cruise);
+    speed = min(speed, max(tuning.turnKp * remainingDeg, MIN_SAFE_SPEED));
+    steppers::setTargets(speed, speed);
+
+    if (tuning.debugPrint && millis() - lastPrintMs >= tuning.debugIntervalMs) {
+      lastPrintMs = millis();
+      Serial.printf("[EVBot] TURN %s t %lu heading %+.2f -> %+.2f  left %.2f deg  spd %.0f  L %.0f R %.0f\n",
+                    left ? "L" : "R", millis() - startMs, heading, targetHeadingDeg, remainingDeg, speed,
+                    steppers::leftSpeed(), steppers::rightSpeed());
+    }
+
+    delay(1);
+  }
+
+  steppers::stop();
+  report.timeMs = millis() - startMs;
+  long dL = labs(encoders::leftTicks() - startTicksL);
+  long dR = labs(encoders::rightTicks() - startTicksR);
+  report.distanceM = (dL + dR) / 2.0 / tuning.ticksPerMeter;  // wheel travel during the spin
+  delay(TURN_SETTLE_MS);  // let the car stop rocking before reading where it ended up
+  report.headingErrDeg = gyro::headingDeg() - targetHeadingDeg;
   return report;
 }
 

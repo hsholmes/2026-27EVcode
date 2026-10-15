@@ -25,6 +25,8 @@ struct Tuning {
   bool rezeroBeforeMove;  // refresh the gyro offset (~120 ms) before each move
   bool debugPrint;        // print the controller state to Serial while moving
   unsigned long debugIntervalMs;  // how often debugPrint prints (200 = 5 Hz)
+  float turnKp;         // turn wheel speed (st/s) per degree still to go - sets how early a turn slows down
+  float turnMaxMps;     // fastest wheel speed while turning
 };
 
 extern Tuning tuning;

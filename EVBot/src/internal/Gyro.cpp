@@ -98,7 +98,7 @@ void calibrate() {
 
 bool available() { return hasImu; }
 
-void update() {
+void update(bool integrate) {
   if (!hasImu) return;
   int16_t raw = readGyroZ();
   if (raw == INT16_MIN) return;  // keep the last rate; the time carries over to the next good read
@@ -107,7 +107,7 @@ void update() {
   lastUpdateUs = nowUs;
   float dps = (raw - zOffset) / LSB_PER_DPS;
   rate = dps;
-  heading = heading + dps * dt;
+  if (integrate) heading = heading + dps * dt;
 }
 
 float headingDeg() { return heading; }

@@ -21,7 +21,9 @@ Tuning tuning = {
   0.3,                              // accelMps2
   true,                             // rezeroBeforeMove
   false,                            // debugPrint
-  200                               // debugIntervalMs
+  200,                              // debugIntervalMs
+  30.0,                             // turnKp
+  0.15                              // turnMaxMps
 };
 
 namespace engine {
@@ -30,10 +32,20 @@ namespace {
 
 TaskHandle_t sensorTaskHandle = nullptr;
 
+// The heading is only integrated while the wheels are turning (plus this
+// long after, while the car settles). A parked car can't turn by itself, so
+// this stops gyro drift from piling up while a sketch waits - on the car,
+// 16 deg in one wait for the START button, which made the next forward()
+// swerve back toward a direction it never really left. It also means a car
+// picked up and put down by hand drives the way it now points.
+const unsigned long HEADING_FREEZE_AFTER_MS = 300;
+
 void sensorTask(void*) {
+  unsigned long lastMovingMs = 0;
   for (;;) {
+    if (steppers::running()) lastMovingMs = millis();
     gyro::serviceRezero();
-    gyro::update();
+    gyro::update(millis() - lastMovingMs < HEADING_FREEZE_AFTER_MS);
     encoders::update();
     board::serviceLowBatteryLed();
     vTaskDelay(1);

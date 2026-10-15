@@ -17,8 +17,9 @@ bool begin();      // false if no MPU-6050 answers
 void calibrate();  // ~4 s, car must be still
 bool available();
 
-// Integrate one reading into the heading. Sensor task only.
-void update();
+// Read the rate, and add it into the heading if integrate is true.
+// Sensor task only.
+void update(bool integrate);
 
 // Heading in degrees since boot, + = turned left. Never reset - callers
 // keep their own zero point, so only the sensor task writes it.
