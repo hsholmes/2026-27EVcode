@@ -79,6 +79,10 @@ struct StallWindow {
 MoveReport driveStraight(float distanceM, float cruiseMps, bool forward, float holdHeadingDeg) {
   MoveReport report = { MoveResult::Done, 0, 0, 0, 0, 0 };
   if (distanceM <= 0) return report;
+  if (steppers::lockedOut()) {
+    report.result = MoveResult::Halted;
+    return report;
+  }
 
   if (tuning.rezeroBeforeMove) gyro::rezero();
 
@@ -125,6 +129,10 @@ MoveReport driveStraight(float distanceM, float cruiseMps, bool forward, float h
 
     if (avgLegM >= targetM) {
       report.result = MoveResult::Done;
+      break;
+    }
+    if (steppers::lockedOut()) {
+      report.result = MoveResult::Halted;
       break;
     }
     if (!steppers::running()) {
@@ -252,6 +260,10 @@ MoveReport spin(float targetHeadingDeg, float maxWheelMps) {
     report.result = MoveResult::NoGyro;
     return report;
   }
+  if (steppers::lockedOut()) {
+    report.result = MoveResult::Halted;
+    return report;
+  }
 
   if (tuning.rezeroBeforeMove) gyro::rezero();
 
@@ -287,6 +299,10 @@ MoveReport spin(float targetHeadingDeg, float maxWheelMps) {
 
     if (remainingDeg <= TURN_DONE_DEG) {
       report.result = MoveResult::Done;
+      break;
+    }
+    if (steppers::lockedOut()) {
+      report.result = MoveResult::Halted;
       break;
     }
     if (!steppers::running()) {

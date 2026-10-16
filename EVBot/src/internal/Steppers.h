@@ -43,6 +43,11 @@ void snapDown(bool left, bool right);
 void stop();
 bool running();  // true while either wheel is still stepping
 
+// While locked out the wheels are stopped and start() does nothing. Used
+// while a new program is uploaded, and by the uploader page's STOP button.
+void lockout(bool on);
+bool lockedOut();
+
 // Driver enable (holding torque). Motors stay enabled between moves.
 void enable(bool on);
 bool enabled();

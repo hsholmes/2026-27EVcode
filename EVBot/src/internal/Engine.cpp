@@ -7,6 +7,7 @@
 #include "Encoders.h"
 #include "Gyro.h"
 #include "Steppers.h"
+#include "Wireless.h"
 
 namespace evbot {
 
@@ -96,6 +97,8 @@ bool begin() {
   // Core 1 like the step interrupts; priority above loop() (1), and it
   // sleeps one tick each pass so the sketch always gets time.
   xTaskCreatePinnedToCore(sensorTask, "evbot_sensors", 4096, nullptr, 2, &sensorTaskHandle, 1);
+
+  wireless::begin();
   return stepOk;
 }
 

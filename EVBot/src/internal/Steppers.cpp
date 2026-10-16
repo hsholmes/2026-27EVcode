@@ -36,6 +36,7 @@ volatile float activeAccel = 0;
 volatile bool leftSnapDown = false;
 volatile bool rightSnapDown = false;
 bool motorsEnabled = false;
+volatile bool locked = false;
 
 inline void stepWheel(hw_timer_t* timer, int pin, volatile bool& running,
                       volatile long& position, volatile long& total,
@@ -139,6 +140,7 @@ void setDirections(bool leftForward, bool rightForward) {
 }
 
 void start(long leftStepCap, long rightStepCap, float accel) {
+  if (locked) return;
   leftPosition = 0;
   rightPosition = 0;
   leftCurrentSpeed = 0;
@@ -172,6 +174,13 @@ void stop() {
 }
 
 bool running() { return leftRunning || rightRunning; }
+
+void lockout(bool on) {
+  locked = on;
+  if (on) stop();
+}
+
+bool lockedOut() { return locked; }
 
 void enable(bool on) {
   motorsEnabled = on;

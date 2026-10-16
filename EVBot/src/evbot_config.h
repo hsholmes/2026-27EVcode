@@ -32,7 +32,8 @@ constexpr uint8_t RIGHT_DIR_FORWARD = LOW;
 // ---- Board I/O ----
 constexpr int BUTTON_PIN = 7;       // START_BTN (SW5), INPUT_PULLUP, LOW = pressed
 constexpr int STATUS_LED_PIN = 40;  // LED (D5) - low-voltage flasher
-constexpr int WL_LED_PIN = 16;      // WL_LED - kept off (EVBot has no wireless yet)
+constexpr int WL_SW_PIN = 15;       // WL_SW (SW4) - wireless switch, INPUT_PULLUP, LOW = on
+constexpr int WL_LED_PIN = 16;      // WL_LED - lit while Bluetooth is on
 constexpr int VOLT_PIN = 13;        // ADC sense on the boosted 12V rail
 constexpr int RGB_LED_PIN = 48;     // onboard WS2812 on the DevKitC (inferred, not schematic-confirmed)
 constexpr uint8_t LED_BRIGHTNESS = 40;  // 0-255

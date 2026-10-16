@@ -7,6 +7,7 @@
 #include "internal/Gyro.h"
 #include "internal/Motion.h"
 #include "internal/Steppers.h"
+#include "internal/Wireless.h"
 
 using namespace evbot;
 
@@ -90,6 +91,7 @@ void EVBot::drive(float cm, bool forward, const char* name) {
   motion::MoveReport r = motion::driveStraight(cm / 100.0, speedLevel * SPEED_STEP_MPS, forward, targetHeading);
   statusLight(BLUE);
 
+  if (r.result == motion::MoveResult::Halted) return;  // stopped from the uploader page - not a mistake
   if (r.result != motion::MoveResult::Done) {
     oops("%s(%g) stopped early after %.1f cm - %s", name, cm, r.distanceM * 100.0,
          r.result == motion::MoveResult::StepCap ? "are the wheels slipping?" : "it took too long");
@@ -126,6 +128,7 @@ void EVBot::turn(float degrees, bool left, const char* name) {
   motion::MoveReport r = motion::spin(targetHeading, wheelMps);
   statusLight(BLUE);
 
+  if (r.result == motion::MoveResult::Halted) return;
   if (r.result != motion::MoveResult::Done) {
     oops("%s(%g) stopped early - %s", name, degrees,
          r.result == motion::MoveResult::StepCap ? "are the wheels slipping?" : "it took too long");
@@ -173,17 +176,19 @@ float EVBot::battery() {
   return board::batteryVolts();
 }
 
-void EVBot::say(const char* text) { Serial.println(text); }
-void EVBot::say(const String& text) { Serial.println(text); }
-void EVBot::say(int number) { Serial.println(number); }
-void EVBot::say(long number) { Serial.println(number); }
-void EVBot::say(unsigned long number) { Serial.println(number); }
-void EVBot::say(double number) { Serial.println(number, 2); }
+// Every say() goes to the Serial Monitor (USB) and to the uploader page (Bluetooth).
+void EVBot::say(const char* text) {
+  Serial.println(text);
+  wireless::print(text);
+}
+void EVBot::say(const String& text) { say(text.c_str()); }
+void EVBot::say(int number) { say(String(number)); }
+void EVBot::say(long number) { say(String(number)); }
+void EVBot::say(unsigned long number) { say(String(number)); }
+void EVBot::say(double number) { say(String(number, 2)); }
 
 void EVBot::say(const char* label, double number) {
-  Serial.print(label);
-  Serial.print(": ");
-  Serial.println(number, 2);
+  say(String(label) + ": " + String(number, 2));
 }
 
 // ---------- Helpers ----------
@@ -204,6 +209,7 @@ void EVBot::oops(const char* format, ...) {
   va_end(args);
   Serial.print("Oops! ");
   Serial.println(buf);
+  wireless::print((String("Oops! ") + buf).c_str());
   board::setColor(255, 0, 0);
 }
 

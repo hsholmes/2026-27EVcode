@@ -17,6 +17,7 @@ enum class MoveResult {
   StepCap,  // ran out of steps before the encoders confirmed (slipping wheels or a dead encoder)
   Timeout,  // took far longer than it should have
   NoGyro,   // a turn was asked for but there's no gyro to measure it
+  Halted,   // stopped from the uploader page, or a new program is arriving
 };
 
 struct MoveReport {
