@@ -152,7 +152,8 @@
   const $ = id => document.getElementById(id);
 
   let device = null, cmdChar = null, dataChar = null;
-  let carName = "", mtu = 23, authed = false;
+  let carName = "", mtu = 23, itvlMs = 0, linkDbg = "", authed = false;
+  let statusBuf = "";  // status lines can arrive in pieces - each ends in a newline
   let fileHandle = null, pickedFile = null, lastUploaded = null;
   let uploading = false, cancelRequested = false, expectReconnect = false;
   let lastAck = 0;
@@ -220,6 +221,14 @@
   }
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+  // Link details (packet size, interval, diagnostics) are for teachers only:
+  // open the page with #debug at the end of the address to see them.
+  const DEBUG = location.hash === "#debug";
+  const linkDetails = () => DEBUG
+    ? " (packets of " + (mtu - 3) + " bytes" + (itvlMs ? ", every " + itvlMs + " ms" : "") + ")" +
+      (linkDbg ? " [link: " + linkDbg + "]" : "")
+    : "";
+
   // ---------- step 1: connect ----------
   $("btnConnect").onclick = async () => {
     try {
@@ -239,17 +248,26 @@
     dataChar = await service.getCharacteristic(DATA);
     const st = await service.getCharacteristic(STATUS);
     const lg = await service.getCharacteristic(LOG);
-    st.addEventListener("characteristicvaluechanged", e => onStatus(dec.decode(e.target.value)));
+    statusBuf = "";
+    st.addEventListener("characteristicvaluechanged", e => {
+      statusBuf += dec.decode(e.target.value);
+      let i;
+      while ((i = statusBuf.indexOf("\n")) >= 0) {
+        const line = statusBuf.slice(0, i);
+        statusBuf = statusBuf.slice(i + 1);
+        if (line) onStatus(line);
+      }
+    });
     lg.addEventListener("characteristicvaluechanged", e => onLogText(dec.decode(e.target.value)));
     await st.startNotifications();
     await lg.startNotifications();
+    // Say so now: the robot starts sending its messages the moment we listen,
+    // and the checks below can take a couple of seconds.
+    sys("Connected to " + (device.name || "robot"));
 
     // The packet size is agreed just after connecting - ask until it's known.
-    for (let i = 0; i < 5; i++) {
-      const info = await ask("INFO", t => t.startsWith("INFO:"), 3000, "INFO");
-      const fields = Object.fromEntries(info.slice(5).split(";").map(kv => kv.split("=")));
-      carName = fields.name || device.name || "robot";
-      mtu = parseInt(fields.mtu, 10) || 23;
+    for (let i = 0; i < 8; i++) {
+      await readInfo();
       if (mtu > 23) break;
       await sleep(400);
     }
@@ -258,11 +276,25 @@
     $("btnConnect").classList.add("hidden");
     $("btnDisconnect").classList.remove("hidden");
     $("pinRow").classList.remove("hidden");
-    sys("Connected to " + carName);
+    if (DEBUG) sys("Link" + linkDetails());
 
     const saved = localStorage.getItem("evbot-pin:" + carName);
     if (saved) { $("pin").value = saved; await unlock(); }
     else { setMsg("connMsg", "Connected to " + carName + ". Type the PIN and click Unlock.", "warn"); $("pin").focus(); }
+  }
+
+  async function readInfo() {
+    let info;
+    try {
+      info = await ask("INFO", t => t.startsWith("INFO:"), 3000, "INFO");
+    } catch (e) {
+      throw new Error("The robot didn't answer. If it has older EVBot software, upload any lesson to it over USB once.");
+    }
+    const fields = Object.fromEntries(info.slice(5).split(";").map(kv => kv.split("=")));
+    carName = fields.name || device.name || "robot";
+    mtu = parseInt(fields.mtu, 10) || 23;
+    itvlMs = parseFloat(fields.itvl) || 0;
+    linkDbg = fields.dbg || "";
   }
 
   async function unlock() {
@@ -297,9 +329,13 @@
     if (expectReconnect) {
       expectReconnect = false;
       setMsg("connMsg", "The robot is restarting with your program… reconnecting.", "warn");
-      for (let i = 0; i < 15; i++) {      // the robot needs ~7 s to calibrate before Bluetooth is back
-        await sleep(2000);
+      // Bluetooth is back about half a second after the restart (it starts
+      // before the gyro check), so try early and often - for up to ~30 s,
+      // which also covers a cold start with the full 7 s calibration.
+      await sleep(600);
+      for (let i = 0; i < 60; i++) {
         try { await connectGatt(); return; } catch (e) {}
+        await sleep(500);
       }
     }
     $("btnConnect").classList.remove("hidden");
@@ -384,7 +420,10 @@
     const problem = checkFile(f);
     if (problem) { setMsg("upMsg", problem, "bad"); return; }
     if (lastUploaded && f.lastModified === lastUploaded.time && f.size === lastUploaded.size &&
-        !confirm("This is the same file you uploaded last time.\nDid you forget Sketch → Export Compiled Binary?\n\nUpload it anyway?")) return;
+        !confirm("This is the same file you uploaded last time (" + f.name + ", exported " + ago(f.lastModified) + ").\n\n" +
+                 "Did you forget Sketch → Export Compiled Binary?\n" +
+                 "Or did you export a DIFFERENT copy of your sketch? Then click Cancel and use \"Choose file…\" " +
+                 "to pick the .ino.bin inside that sketch's build folder.\n\nUpload the old file anyway?")) return;
 
     const bytes = new Uint8Array(await f.arrayBuffer());
     if (bytes[0] !== 0xE9) { setMsg("upMsg", "That file isn't a robot program.", "bad"); return; }
@@ -395,6 +434,9 @@
     const t0 = performance.now();
     try {
       setMsg("upMsg", "Getting the robot ready…");
+      await readInfo();  // packet size and interval can change after connecting
+      if (DEBUG) sys("Uploading" + linkDetails());
+      if (mtu <= 23) sys("Warning: the robot is using tiny 20-byte packets - this upload will be slow.");
       const r = await ask("OTA_BEGIN:" + bytes.length, t => t === "OTA:READY" || t.startsWith("OTA:ERR:"), 10000, "start");
       if (r !== "OTA:READY") throw new Error(r.slice(8));
 
@@ -407,9 +449,10 @@
         await dataChar.writeValueWithoutResponse(bytes.subarray(sent, end));
         sent = end;
         if (sent === nextAck) {
-          // Wait until the robot has written this block to its memory.
+          // Keep at most two blocks in flight: wait until the robot has written
+          // the block before this one, so sending and flash writing overlap.
           const tWait = performance.now();
-          while (lastAck < nextAck) {
+          while (lastAck < nextAck - ACK_EVERY) {
             if (!device.gatt.connected) throw new Error("The robot disconnected.");
             if (performance.now() - tWait > 8000) throw new Error("The robot stopped answering - try again.");
             await sleep(5);
@@ -428,10 +471,12 @@
       if (done !== "OTA:OK") throw new Error(done.slice(8));
 
       lastUploaded = { time: f.lastModified, size: f.size };
-      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      const elapsed = (performance.now() - t0) / 1000;
+      const secs = elapsed.toFixed(1);
       setMsg("upMsg", "Done in " + secs + " s! The robot is restarting with your new program.", "good");
       $("n3").classList.add("done");
-      sys("Uploaded " + f.name + " (" + Math.round(bytes.length / 1024) + " KB, " + secs + " s)");
+      sys("Uploaded " + f.name + " (" + Math.round(bytes.length / 1024) + " KB in " + secs + " s" +
+          (DEBUG ? ", " + (bytes.length / 1024 / elapsed).toFixed(1) + " KB/s, packets of " + chunk + " bytes" : "") + ")");
       expectReconnect = true;
     } catch (e) {
       setMsg("upMsg", "Upload failed: " + e.message, "bad");

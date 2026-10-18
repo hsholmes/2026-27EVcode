@@ -1,6 +1,7 @@
 #include "EVBot.h"
 
 #include <stdarg.h>
+#include "esp_system.h"
 #include "internal/Board.h"
 #include "internal/Encoders.h"
 #include "internal/Engine.h"
@@ -29,8 +30,13 @@ float odometerM() {
 void EVBot::begin() {
   if (started) return;
   Serial.begin(115200);
-  unsigned long t0 = millis();
-  while (!Serial && millis() - t0 < 2000) delay(10);
+  // Give a USB Serial Monitor a moment to attach after power-on or a USB
+  // upload - but not after a software restart (Run program again or a
+  // Bluetooth upload), where it would only slow the restart down.
+  if (esp_reset_reason() != ESP_RST_SW) {
+    unsigned long t0 = millis();
+    while (!Serial && millis() - t0 < 2000) delay(10);
+  }
   Serial.println("[EVBot] Starting up...");
 
   board::setColor(255, 130, 0);  // amber: getting ready, don't touch
@@ -45,6 +51,7 @@ void EVBot::begin() {
   } else {
     statusLight(BLUE);
     Serial.println("[EVBot] Ready!");
+    wireless::print("[EVBot] Ready!");
   }
 }
 

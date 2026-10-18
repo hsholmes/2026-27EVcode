@@ -1,6 +1,8 @@
 #include "Gyro.h"
 
 #include <Wire.h>
+#include "esp_attr.h"
+#include "esp_system.h"
 #include "../evbot_config.h"
 
 namespace evbot {
@@ -22,6 +24,15 @@ volatile float rate = 0.0;
 unsigned long lastUpdateUs = 0;
 volatile bool rezeroRequested = false;
 
+// The calibrated offset survives a software restart (Run program again, or a
+// Bluetooth upload) in RTC memory, which a restart doesn't clear. Then begin()
+// only needs a quick re-zero instead of the 7-second calibration. A power-on
+// leaves this memory random, so it is only trusted after a software restart
+// and with the magic number in place.
+const uint32_t SAVED_MAGIC = 0x6E7E6170;
+RTC_NOINIT_ATTR uint32_t savedMagic;
+RTC_NOINIT_ATTR float savedOffset;
+
 void writeRegister(uint8_t reg, uint8_t value) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(reg);
@@ -42,6 +53,28 @@ int16_t readGyroZ() {
   uint8_t high = Wire.read();
   uint8_t low = Wire.read();
   return (int16_t)((high << 8) | low);
+}
+
+// Average `count` Z readings `gapMs` apart. False if fewer than `minGood` worked.
+bool averageZ(int count, int gapMs, int minGood, float& out) {
+  long sum = 0;
+  int good = 0;
+  for (int i = 0; i < count; i++) {
+    int16_t raw = readGyroZ();
+    if (raw != INT16_MIN) {
+      sum += raw;
+      good++;
+    }
+    delay(gapMs);
+  }
+  if (good < minGood) return false;
+  out = (float)sum / (float)good;
+  return true;
+}
+
+void saveOffset() {
+  savedOffset = zOffset;
+  savedMagic = SAVED_MAGIC;
 }
 
 }  // namespace
@@ -73,8 +106,24 @@ bool begin() {
   return false;
 }
 
-void calibrate() {
-  if (!hasImu) return;
+bool canQuickCalibrate() {
+  return hasImu && esp_reset_reason() == ESP_RST_SW && savedMagic == SAVED_MAGIC && isfinite(savedOffset);
+}
+
+bool calibrate() {
+  if (!hasImu) return false;
+  if (canQuickCalibrate()) {
+    // The gyro stayed powered and warm through the restart: a short average
+    // (~0.3 s) is enough to catch any small drift since it was saved.
+    float quick;
+    if (averageZ(100, 3, 70, quick)) {
+      zOffset = quick;
+      saveOffset();
+      lastUpdateUs = micros();
+      return true;
+    }
+  }
+
   delay(3000);  // let the gyro settle after power-up
   for (int i = 0; i < 200; i++) {
     readGyroZ();
@@ -93,7 +142,9 @@ void calibrate() {
     delay(5);
   }
   if (good > 0) zOffset = sum / (float)good;
+  saveOffset();
   lastUpdateUs = micros();
+  return false;
 }
 
 bool available() { return hasImu; }
@@ -121,17 +172,11 @@ void rezero() {
 
 void serviceRezero() {
   if (!rezeroRequested) return;
-  long zSum = 0;
-  int samples = 0;
-  for (int i = 0; i < 40; i++) {
-    int16_t raw = readGyroZ();
-    if (raw != INT16_MIN) {
-      zSum += raw;
-      samples++;
-    }
-    delay(3);
+  float fresh;
+  if (averageZ(40, 3, 25, fresh)) {
+    zOffset = fresh;
+    saveOffset();
   }
-  if (samples >= 25) zOffset = (float)zSum / (float)samples;
   lastUpdateUs = micros();  // the car was still - don't integrate the time spent here
   rezeroRequested = false;
 }

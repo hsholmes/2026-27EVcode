@@ -13,8 +13,12 @@
 namespace evbot {
 namespace gyro {
 
-bool begin();      // false if no MPU-6050 answers
-void calibrate();  // ~4 s, car must be still
+bool begin();  // false if no MPU-6050 answers
+// True right after a software restart with a saved calibration - then
+// calibrate() takes ~0.3 s instead of ~7 s.
+bool canQuickCalibrate();
+// Car must be still. Returns true if it was the quick version.
+bool calibrate();
 bool available();
 
 // Read the rate, and add it into the heading if integrate is true.

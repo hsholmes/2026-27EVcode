@@ -66,12 +66,26 @@ void loadSavedTuning() {
   prefs.end();
 }
 
+// Longest begin() waits for the uploader page to reconnect after a restart
+// it asked for. If the page was closed, the program still starts after this.
+const unsigned long PAGE_WAIT_MS = 6000;
+
+// Startup messages go to the Serial Monitor and to the uploader page.
+void report(const String& text) {
+  Serial.println(text);
+  wireless::print(text.c_str());
+}
+
 }  // namespace
 
 bool begin() {
   board::begin();
   bool stepOk = steppers::begin();
-  if (!stepOk) Serial.println("[EVBot] Step timers failed - motors will not run");
+
+  // Bluetooth first, so the uploader page can reconnect during the gyro
+  // calibration below and show the program's messages as they happen.
+  wireless::begin();
+  if (!stepOk) report("[EVBot] Step timers failed - motors will not run");
 
   Wire.begin(config::IMU_SDA_PIN, config::IMU_SCL_PIN);
   Wire.setClock(config::I2C_CLOCK_HZ);
@@ -79,17 +93,21 @@ bool begin() {
   Wire1.setClock(config::I2C_CLOCK_HZ);
 
   if (gyro::begin()) {
-    Serial.println("[EVBot] Gyro found - calibrating, keep the car still (about 7 seconds)...");
+    if (gyro::canQuickCalibrate()) {
+      report("[EVBot] Quick gyro check - keep the robot still...");
+    } else {
+      report("[EVBot] Calibrating the gyro - keep the robot still (about 7 seconds)...");
+    }
     gyro::calibrate();
   } else {
-    Serial.println("[EVBot] WARNING: no gyro (MPU-6050) - the car can't hold a straight line or turn by angle");
+    report("[EVBot] WARNING: no gyro (MPU-6050) - the car can't hold a straight line or turn by angle");
   }
 
   if (!encoders::begin()) {
-    Serial.print("[EVBot] WARNING: encoder magnet missing -");
-    if (!encoders::leftMagnetOk()) Serial.print(" left");
-    if (!encoders::rightMagnetOk()) Serial.print(" right");
-    Serial.println(" (check the magnet gap)");
+    String missing = "[EVBot] WARNING: encoder magnet missing -";
+    if (!encoders::leftMagnetOk()) missing += " left";
+    if (!encoders::rightMagnetOk()) missing += " right";
+    report(missing + " (check the magnet gap)");
   }
 
   loadSavedTuning();
@@ -98,7 +116,9 @@ bool begin() {
   // sleeps one tick each pass so the sketch always gets time.
   xTaskCreatePinnedToCore(sensorTask, "evbot_sensors", 4096, nullptr, 2, &sensorTaskHandle, 1);
 
-  wireless::begin();
+  // Restarted from the uploader page? Hold the program until the page is
+  // back (a few seconds at most), so its messages show up as they happen.
+  wireless::waitForPageAfterRestart(PAGE_WAIT_MS);
   return stepOk;
 }
 

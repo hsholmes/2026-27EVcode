@@ -105,6 +105,8 @@ void square(int size) {           // make your own command
 
 Changed your code? **Export again**, then Upload.
 
+Opened a lesson from **File → Examples**? Do **File → Save As** first and work in your own copy, otherwise you change the lesson for everyone and the uploader may still be pointing at your old copy.
+
 ## Help!
 
 - **Red light + "Oops!" in the Serial Monitor**: read the message. It tells you what went wrong.

@@ -170,3 +170,4 @@ When a student makes a mistake the car can catch, it prints a message starting w
 | Uploader: "Can't start the update" | Arduino IDE **Tools → Partition Scheme → Default**, then upload once over USB |
 | Uploader: "not a working program" | wrong file; choose the `.ino.bin`, not `.merged.bin` / `.bootloader.bin` |
 | Robot runs the old program after upload | the student forgot **Export Compiled Binary** after changing the code |
+| Wireless upload slow (several minutes instead of ~35 s) | open the uploader page with `#debug` at the end of its address (e.g. `EVBotUploader.html#debug`) to see the packet size and link interval; tiny 20-byte packets mean the link didn't upgrade - disconnect and connect again |

@@ -33,6 +33,11 @@ bool running();    // BLE is up
 bool connected();  // an uploader page is connected
 bool updating();   // a program is being received
 
+// If this boot is a restart the uploader page asked for, wait (up to
+// timeoutMs) until the page has reconnected and is listening, so the
+// program's messages show up live. Returns at once on any other boot.
+bool waitForPageAfterRestart(unsigned long timeoutMs);
+
 // Send a line of text to the uploader page's message box (if connected).
 void print(const char* text);
 

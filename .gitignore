@@ -1,1 +1,3 @@
 .pio
+# Arduino IDE "Export Compiled Binary" output inside sketch/example folders
+build/
