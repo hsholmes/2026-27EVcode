@@ -1,3 +1,6 @@
 .pio
 # Arduino IDE "Export Compiled Binary" output inside sketch/example folders
 build/
+
+# Claude Code local session files (handoffs, nudge counter, worktrees)
+.claude/
