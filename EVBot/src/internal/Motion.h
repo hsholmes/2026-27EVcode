@@ -41,5 +41,19 @@ MoveReport driveStraight(float distanceM, float cruiseMps, bool forward, float h
 // distanceM = how far each wheel rolled.
 MoveReport spin(float targetHeadingDeg, float maxWheelMps);
 
+// Drive along a circle of radiusM (to the wheel-base centre; at least half the
+// track width) until the gyro heading reaches targetHeadingDeg. The outer
+// wheel goes up to outerMps, the inner one in proportion. Waits until done.
+MoveReport arc(float targetHeadingDeg, float radiusM, float outerMps);
+
+// Free driving: each wheel at its own speed (m/s, negative = backward), with
+// no end - returns at once. Changing speeds while driving ramps smoothly
+// (a wheel that changes direction first slows to a stop). Ends with
+// stopDriving(), or any other move.
+void drive(float leftMps, float rightMps);
+bool driving();
+// Ramp both wheels down to a stop (blocks for up to ~2 s) and end free driving.
+void stopDriving();
+
 }  // namespace motion
 }  // namespace evbot

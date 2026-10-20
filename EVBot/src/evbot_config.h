@@ -66,6 +66,12 @@ constexpr float DEFAULT_TICKS_PER_METER = AS5600_TICKS_PER_REV / (MM_PER_REV / 1
 constexpr float TICKS_PER_STEP = AS5600_TICKS_PER_REV / (STEPS_PER_REV * MICROSTEP);
 
 // ---- Speed limits (steps/sec) ----
+// Distance between the two wheels' contact points. Measured on the car
+// (2026-10-15): each wheel rolls ~11.8 cm in a 90 deg spin, so
+// 2 x 0.118 m / (pi/2) = 0.150 m. Only arcs use it - spins and arc ends are
+// measured with the gyro, so a small error only changes an arc's radius.
+constexpr float TRACK_WIDTH_M = 0.150;
+
 constexpr float MIN_SAFE_SPEED = 80.0;  // floor, avoids near-zero speeds
 constexpr float MAX_SPEED = 6684.0;     // ~1.0 m/s, hard ceiling for any move
 

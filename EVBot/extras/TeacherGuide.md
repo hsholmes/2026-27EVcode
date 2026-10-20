@@ -76,6 +76,9 @@ Every lesson is an example sketch (**File → Examples → EVBot**). Each one te
 | 8 | Sensors | The robot measures the world | `distance`, `heading`, `battery` | predict, then check measurements |
 | 9 | WhileLoop | Repeat until something happens | `while`, `&&`, `!` | stop the car with the button |
 | 10 | Challenge | Put it all together | `millis()` | run a mini Science Olympiad event |
+| 11 | DriveAndCheck | *Level 3:* commands that keep running while the program goes on | `drive`, `stop`, `spinLeft` | stop the car with their own sensor checks |
+| 12 | Curves | Circles and radius; sound | `arcLeft`, `arcRight`, `beep` | drive circles, figure 8s, play a tune |
+| 13 | MySteering | Feedback control: measure, compare, correct | `drive` with `heading()` | write the code that keeps a robot straight |
 
 ### Lesson notes
 
@@ -98,6 +101,12 @@ Every lesson is an example sketch (**File → Examples → EVBot**). Each one te
 **9 · WhileLoop.** Contrast with `for`: you don't know how many hops it will take. The button is only checked between hops, so students must **hold** it. Try #5 (infinite loop) is worth a real demo. Press the car's RESET button to escape.
 
 **10 · Challenge.** A small version of the real Science Olympiad Electric Vehicle event. Teams tape a course, guess distances, run, measure with a ruler, and adjust. Score them on how close they finish to the target and to a target time.
+
+**11 · DriveAndCheck.** The first command that does *not* wait. Compare `forward(80)` with `drive(5, 5)` plus a `while` loop on `distance()`: same result, but now the program can check anything while driving. Students often forget `stop()`: the car then keeps driving forever, even after `setup()` ends. Let them find out on the floor, then stop it with the uploader's **Stop robot** button (or pick it up and switch it off).
+
+**12 · Curves.** Radius is measured to the middle of the car; anything under 8 cm is refused (use `turnLeft` instead). Circles end on the gyro, so a full circle really is 360°. The beeps come from the stepper motors and are quiet.
+
+**13 · MySteering.** The big idea of robotics. Draw the loop on the board: *measure → compare → correct → repeat*. Exploring `gain` shows the classic trade-off: too small drifts, too big wiggles. Then reveal that `forward()` does exactly this inside (plus a lot more).
 
 ### Going further
 
@@ -144,7 +153,7 @@ When a student makes a mistake the car can catch, it prints a message starting w
 
 ## 8. Teacher tools and settings
 
-- **Teacher examples:** `Teacher_CarSetup` (Bluetooth name and PIN), `EngineTest` (straight driving), `SquareTest` (turns) and `ShiverTest` (motor smoothness). The test examples print a detailed report for every move.
+- **Teacher examples:** `Teacher_CarSetup` (Bluetooth name and PIN), `Teacher_CarCheck` (is the car ready? - see `extras/HardwareChecklist.md`), `EngineTest` (straight driving), `SquareTest` (turns) and `ShiverTest` (motor smoothness). The test examples print a detailed report for every move.
 - **Debug reports in any sketch:**
   ```cpp
   #include <internal/Engine.h>

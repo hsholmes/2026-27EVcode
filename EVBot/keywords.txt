@@ -19,6 +19,14 @@ heading	KEYWORD2
 distance	KEYWORD2
 battery	KEYWORD2
 say	KEYWORD2
+drive	KEYWORD2
+spinLeft	KEYWORD2
+spinRight	KEYWORD2
+arcLeft	KEYWORD2
+arcRight	KEYWORD2
+resetDistance	KEYWORD2
+resetHeading	KEYWORD2
+beep	KEYWORD2
 
 SLOW	LITERAL1
 MEDIUM	LITERAL1

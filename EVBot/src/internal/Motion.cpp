@@ -342,5 +342,152 @@ MoveReport spin(float targetHeadingDeg, float maxWheelMps) {
   return report;
 }
 
+MoveReport arc(float targetHeadingDeg, float radiusM, float outerMps) {
+  MoveReport report = { MoveResult::Done, 0, 0, 0, 0, 0 };
+  if (!gyro::available()) {
+    report.result = MoveResult::NoGyro;
+    return report;
+  }
+  if (steppers::lockedOut()) {
+    report.result = MoveResult::Halted;
+    return report;
+  }
+
+  if (tuning.rezeroBeforeMove) gyro::rezero();
+
+  const float startHeading = gyro::headingDeg();
+  const float turnDeg = targetHeadingDeg - startHeading;
+  if (fabs(turnDeg) <= TURN_DONE_DEG) {
+    report.headingErrDeg = -turnDeg;
+    return report;
+  }
+  const bool left = turnDeg > 0;
+
+  // Wheel speeds in proportion to the circles they ride on: the inner wheel
+  // on radius - half the track, the outer one on radius + half.
+  const float half = TRACK_WIDTH_M / 2.0;
+  const float outerR = max(radiusM, half) + half;
+  const float ratio = (max(radiusM, half) - half) / outerR;  // inner speed / outer speed
+  const float cruise = constrain(outerMps * STEPS_PER_METER, MIN_SAFE_SPEED, MAX_SPEED);
+  const float accelRate = max(tuning.accelMps2, 0.05f) * STEPS_PER_METER;
+  // Same yaw-rate slow-down near the end as a spin: a spin turns at
+  // speed / half-track, an arc at outer speed / outer radius.
+  const float slowGain = tuning.turnKp * outerR / half;
+  const float capArcM = outerR * fabs(turnDeg) * DEG_TO_RAD;
+  const long stepCap = (long)(capArcM * STEPS_PER_METER * STEP_SAFETY_MARGIN) + 400;
+  const unsigned long timeoutMs = (unsigned long)(capArcM / (MIN_SAFE_SPEED / STEPS_PER_METER) * 1000.0) + TIMEOUT_EXTRA_MS;
+
+  steppers::setDirections(true, true);
+  steppers::enable(true);
+  steppers::start(stepCap, stepCap, accelRate * WHEEL_SLEW_FACTOR);
+
+  const long startTicksL = encoders::leftTicks();
+  const long startTicksR = encoders::rightTicks();
+  const unsigned long startMs = millis();
+  unsigned long lastPrintMs = 0;
+
+  for (;;) {
+    float heading = gyro::headingDeg();
+    float remainingDeg = left ? targetHeadingDeg - heading : heading - targetHeadingDeg;
+
+    if (remainingDeg <= TURN_DONE_DEG) {
+      report.result = MoveResult::Done;
+      break;
+    }
+    if (steppers::lockedOut()) {
+      report.result = MoveResult::Halted;
+      break;
+    }
+    if (!steppers::running()) {
+      report.result = MoveResult::StepCap;
+      break;
+    }
+    if (millis() - startMs > timeoutMs) {
+      report.result = MoveResult::Timeout;
+      break;
+    }
+
+    float rampElapsedS = (millis() - startMs) / 1000.0;
+    float outer = constrain(MIN_SAFE_SPEED + accelRate * rampElapsedS, MIN_SAFE_SPEED, cruise);
+    outer = min(outer, max(slowGain * remainingDeg, MIN_SAFE_SPEED));
+    float inner = outer * ratio;
+    // Turning left: the left wheel is on the inside.
+    steppers::setTargets(left ? inner : outer, left ? outer : inner);
+
+    if (tuning.debugPrint && millis() - lastPrintMs >= tuning.debugIntervalMs) {
+      lastPrintMs = millis();
+      Serial.printf("[EVBot] ARC %s t %lu heading %+.2f -> %+.2f  left %.2f deg  outer %.0f inner %.0f\n",
+                    left ? "L" : "R", millis() - startMs, heading, targetHeadingDeg, remainingDeg, outer, inner);
+    }
+
+    delay(1);
+  }
+
+  steppers::stop();
+  report.timeMs = millis() - startMs;
+  long dL = labs(encoders::leftTicks() - startTicksL);
+  long dR = labs(encoders::rightTicks() - startTicksR);
+  report.distanceM = (dL + dR) / 2.0 / tuning.ticksPerMeter / tuning.distFactor;  // centre of the car
+  delay(TURN_SETTLE_MS);
+  report.headingErrDeg = gyro::headingDeg() - targetHeadingDeg;
+  return report;
+}
+
+// ---------- Free driving ----------
+
+namespace {
+
+bool freeDriving = false;
+bool freeLeftFwd = true, freeRightFwd = true;
+const long FREE_DRIVE_STEPS = 0x3FFFFFFF;          // effectively endless
+const unsigned long FREE_STOP_TIMEOUT_MS = 4000;  // longest a ramp-down may take
+
+// Slow both wheels to a stop at the normal accel, then end the move.
+void rampDown() {
+  steppers::setTargets(0, 0);
+  unsigned long t0 = millis();
+  while (steppers::running() && (steppers::leftSpeed() > 0 || steppers::rightSpeed() > 0) &&
+         millis() - t0 < FREE_STOP_TIMEOUT_MS) {
+    delay(2);
+  }
+  steppers::stop();
+}
+
+}  // namespace
+
+void drive(float leftMps, float rightMps) {
+  if (steppers::lockedOut()) {
+    freeDriving = false;
+    return;
+  }
+  bool leftFwd = leftMps >= 0, rightFwd = rightMps >= 0;
+  float left = min(fabs(leftMps) * STEPS_PER_METER, MAX_SPEED);
+  float right = min(fabs(rightMps) * STEPS_PER_METER, MAX_SPEED);
+
+  // A wheel can only change direction while stopped.
+  bool restart = !freeDriving || !steppers::running() || leftFwd != freeLeftFwd || rightFwd != freeRightFwd;
+  if (restart) {
+    if (steppers::running()) rampDown();
+    steppers::setDirections(leftFwd, rightFwd);
+    steppers::enable(true);
+    // No outer control loop here, so the slew timer ramps at the plain accel.
+    steppers::start(FREE_DRIVE_STEPS, FREE_DRIVE_STEPS, max(tuning.accelMps2, 0.05f) * STEPS_PER_METER);
+    freeLeftFwd = leftFwd;
+    freeRightFwd = rightFwd;
+    freeDriving = true;
+  }
+  steppers::setTargets(left, right);
+}
+
+bool driving() {
+  if (freeDriving && (!steppers::running() || steppers::lockedOut())) freeDriving = false;
+  return freeDriving;
+}
+
+void stopDriving() {
+  if (freeDriving && steppers::running()) rampDown();
+  freeDriving = false;
+}
+
 }  // namespace motion
 }  // namespace evbot

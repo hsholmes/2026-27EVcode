@@ -67,7 +67,7 @@ class EVBot {
   // Do nothing for this many seconds (can be a decimal, like 0.5).
   void wait(float seconds);
 
-  // Stop the wheels right away.
+  // Stop the wheels (after drive() or spinLeft() / spinRight()).
   void stop();
 
   // ---------- Level 2: Senses ----------
@@ -105,12 +105,40 @@ class EVBot {
   // Show a label and a number, like "Heading: 90.0".
   void say(const char* label, double number);
 
+  // ---------- Level 3: Explorer ----------
+
+  // Set each wheel's speed, from -10 (fast backward) to 10 (fast forward) -
+  // decimals like 4.5 are fine.
+  // 0 stops that wheel. The robot KEEPS GOING while your program carries on,
+  // until stop() or another move - so you can check heading(), distance()
+  // or buttonPressed() while it drives.
+  void drive(float leftSpeed, float rightSpeed);
+
+  // Spin on the spot and keep spinning, until stop().
+  void spinLeft();
+  void spinRight();
+
+  // Drive along a curve: a circle of this radius (cm, at least 8), for this
+  // many degrees of turning. arcLeft(30, 360) drives a full circle.
+  void arcLeft(float radiusCm, float degrees);
+  void arcRight(float radiusCm, float degrees);
+
+  // Start counting distance() / heading() from 0 again, from right here.
+  void resetDistance();
+  void resetHeading();
+
+  // Make a sound with the motors (the robot doesn't move).
+  void beep();                               // a short beep
+  void beep(float frequency, float seconds);  // frequency in Hz, like 440 for the note A
+
  private:
   bool ready(const char* command);
   void oops(const char* format, ...);
   void statusLight(EVBotColor color);
-  void drive(float cm, bool forward, const char* name);
+  void driveDistance(float cm, bool forward, const char* name);
   void turn(float degrees, bool left, const char* name);
+  void arc(float radiusCm, float degrees, bool left, const char* name);
+  void endFreeDrive();
 
   bool started = false;
   bool studentLight = false;  // after the first light() call, the program owns the LED

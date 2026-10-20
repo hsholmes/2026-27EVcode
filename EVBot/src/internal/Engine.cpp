@@ -24,7 +24,8 @@ Tuning tuning = {
   false,                            // debugPrint
   200,                              // debugIntervalMs
   30.0,                             // turnKp
-  0.15                              // turnMaxMps
+  0.15,                             // turnMaxMps
+  2                                 // beepSwing: all of 1-16 were audible on the car (BeepTest, 2026-10-20); 2 is louder than 1 and barely moves the car
 };
 
 namespace engine {

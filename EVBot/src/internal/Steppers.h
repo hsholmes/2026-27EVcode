@@ -43,6 +43,11 @@ void snapDown(bool left, bool right);
 void stop();
 bool running();  // true while either wheel is still stepping
 
+// Buzz both motors at hz for ms (blocks), without driving anywhere: each
+// wheel steps `swing` microsteps forward then back, over and over. A bigger
+// swing is louder (and shakes the car a little more).
+void tone(float hz, unsigned long ms, int swing);
+
 // While locked out the wheels are stopped and start() does nothing. Used
 // while a new program is uploaded, and by the uploader page's STOP button.
 void lockout(bool on);

@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include "esp_system.h"
+#include "evbot_config.h"
 #include "internal/Board.h"
 #include "internal/Encoders.h"
 #include "internal/Engine.h"
@@ -57,8 +58,8 @@ void EVBot::begin() {
 
 // ---------- Level 1: Moving ----------
 
-void EVBot::forward(float cm) { drive(cm, true, "forward"); }
-void EVBot::backward(float cm) { drive(cm, false, "backward"); }
+void EVBot::forward(float cm) { driveDistance(cm, true, "forward"); }
+void EVBot::backward(float cm) { driveDistance(cm, false, "backward"); }
 void EVBot::turnLeft(float degrees) { turn(degrees, true, "turnLeft"); }
 void EVBot::turnRight(float degrees) { turn(degrees, false, "turnRight"); }
 
@@ -80,11 +81,23 @@ void EVBot::wait(float seconds) {
 }
 
 void EVBot::stop() {
-  steppers::stop();
+  if (!started) return;
+  if (motion::driving()) endFreeDrive();
+  else steppers::stop();
+  statusLight(BLUE);
 }
 
-void EVBot::drive(float cm, bool forward, const char* name) {
+// Any move after drive()/spin: first ramp the wheels down, and point the
+// next straight move wherever the robot faces now.
+void EVBot::endFreeDrive() {
+  if (!motion::driving()) return;
+  motion::stopDriving();
+  targetHeading = gyro::headingDeg();
+}
+
+void EVBot::driveDistance(float cm, bool forward, const char* name) {
   if (!ready(name)) return;
+  endFreeDrive();
   if (cm <= 0) {
     oops("%s(%g): distance must be bigger than 0", name, cm);
     return;
@@ -125,6 +138,7 @@ void EVBot::turn(float degrees, bool left, const char* name) {
     return;
   }
   if (degrees == 0) return;
+  endFreeDrive();
 
   // The new direction is counted from where the robot SHOULD be pointing,
   // not where it ended up, so small errors don't add up turn after turn.
@@ -144,6 +158,108 @@ void EVBot::turn(float degrees, bool left, const char* name) {
     Serial.printf("[EVBot] %s(%g): ended %+.2f deg from target in %.2f s, wheels rolled %.1f cm\n",
                   name, degrees, r.headingErrDeg, r.timeMs / 1000.0, r.distanceM * 100.0);
   }
+}
+
+// ---------- Level 3: Explorer ----------
+
+void EVBot::drive(float leftSpeed, float rightSpeed) {
+  if (!ready("drive")) return;
+  if (leftSpeed < -10 || leftSpeed > 10 || rightSpeed < -10 || rightSpeed > 10) {
+    oops("drive(%g, %g): speeds must be from -10 to 10", leftSpeed, rightSpeed);
+    leftSpeed = constrain(leftSpeed, -10.0f, 10.0f);
+    rightSpeed = constrain(rightSpeed, -10.0f, 10.0f);
+  }
+  if (leftSpeed == 0 && rightSpeed == 0) {
+    stop();
+    return;
+  }
+  statusLight(GREEN);
+  motion::drive(leftSpeed * SPEED_STEP_MPS, rightSpeed * SPEED_STEP_MPS);
+}
+
+// Spins use the turn speed limit, like turnLeft().
+void EVBot::spinLeft() {
+  float s = min(speedLevel * SPEED_STEP_MPS, tuning.turnMaxMps) / SPEED_STEP_MPS;
+  drive(-s, s);
+}
+
+void EVBot::spinRight() {
+  float s = min(speedLevel * SPEED_STEP_MPS, tuning.turnMaxMps) / SPEED_STEP_MPS;
+  drive(s, -s);
+}
+
+void EVBot::arcLeft(float radiusCm, float degrees) { arc(radiusCm, degrees, true, "arcLeft"); }
+void EVBot::arcRight(float radiusCm, float degrees) { arc(radiusCm, degrees, false, "arcRight"); }
+
+void EVBot::arc(float radiusCm, float degrees, bool left, const char* name) {
+  if (!ready(name)) return;
+  float minRadiusCm = config::TRACK_WIDTH_M * 100.0 / 2.0;
+  if (radiusCm < minRadiusCm) {
+    oops("%s(%g, %g): the radius must be at least %.0f cm - to turn on the spot, use turnLeft() or turnRight()",
+         name, radiusCm, degrees, ceil(minRadiusCm));
+    return;
+  }
+  if (radiusCm > MAX_MOVE_CM) {
+    oops("%s(%g, %g): that circle is more than 10 meters across!", name, radiusCm, degrees);
+    return;
+  }
+  if (degrees < 0) {
+    oops("%s(%g, %g): use a positive angle - to curve the other way, use %s", name, radiusCm, degrees,
+         left ? "arcRight" : "arcLeft");
+    return;
+  }
+  if (degrees > MAX_TURN_DEG) {
+    oops("%s(%g, %g): that's more than 10 full circles!", name, radiusCm, degrees);
+    return;
+  }
+  if (!gyro::available()) {
+    oops("%s: the robot has no gyro, so it can't measure curves", name);
+    return;
+  }
+  if (degrees == 0) return;
+  endFreeDrive();
+
+  targetHeading += left ? degrees : -degrees;
+  statusLight(GREEN);
+  motion::MoveReport r = motion::arc(targetHeading, radiusCm / 100.0, speedLevel * SPEED_STEP_MPS);
+  statusLight(BLUE);
+
+  if (r.result == motion::MoveResult::Halted) return;
+  if (r.result != motion::MoveResult::Done) {
+    oops("%s(%g, %g) stopped early - %s", name, radiusCm, degrees,
+         r.result == motion::MoveResult::StepCap ? "are the wheels slipping?" : "it took too long");
+  }
+  if (tuning.debugPrint) {
+    Serial.printf("[EVBot] %s(%g, %g): ended %+.2f deg from target in %.2f s, drove %.1f cm\n",
+                  name, radiusCm, degrees, r.headingErrDeg, r.timeMs / 1000.0, r.distanceM * 100.0);
+  }
+}
+
+void EVBot::resetDistance() {
+  if (!ready("resetDistance")) return;
+  homeDistance = odometerM();
+}
+
+void EVBot::resetHeading() {
+  if (!ready("resetHeading")) return;
+  homeHeading = gyro::headingDeg();
+  targetHeading = homeHeading;  // "straight ahead" is now wherever the robot points
+}
+
+void EVBot::beep() { beep(880, 0.15); }
+
+void EVBot::beep(float frequency, float seconds) {
+  if (!ready("beep")) return;
+  if (frequency < 50 || frequency > 3000) {
+    oops("beep(%g, %g): frequency must be from 50 to 3000 Hz", frequency, seconds);
+    return;
+  }
+  if (seconds <= 0 || seconds > 10) {
+    oops("beep(%g, %g): the beep must be longer than 0 and at most 10 seconds", frequency, seconds);
+    return;
+  }
+  endFreeDrive();
+  steppers::tone(frequency, (unsigned long)(seconds * 1000.0), tuning.beepSwing);
 }
 
 // ---------- Level 2: Senses ----------

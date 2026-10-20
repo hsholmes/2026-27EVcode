@@ -26,7 +26,8 @@ The car drives straight and turns accurately by itself, using its gyro and wheel
 
 | | |
 |---|---|
-| `examples/01_HelloLight` … `10_Challenge_PushReverse` | ten student lessons, one idea each, with "Try this!" challenges |
+| `examples/01_HelloLight` … `13_MySteering` | student lessons, one idea each, with "Try this!" challenges (11-13 are Level 3) |
+| `extras/HardwareChecklist.md` + `examples/Teacher_CarCheck` | is a car ready for class? |
 | `extras/CheatSheet.md` | one-page command reference for students |
 | `extras/TeacherGuide.md` | setup, lesson plans, common mistakes, troubleshooting |
 | `extras/EVBotUploader.html` | upload programs and see `robot.say()` messages over Bluetooth (Chrome / Edge) |
@@ -39,6 +40,8 @@ The car drives straight and turns accurately by itself, using its gyro and wheel
 **Moving:** `forward(cm)`, `backward(cm)`, `turnLeft(deg)`, `turnRight(deg)`, `setSpeed(1–10)`, `wait(sec)`, `stop()`
 
 **Senses:** `light(color)`, `buttonPressed()`, `waitForButton()`, `heading()`, `distance()`, `battery()`, `say(...)`
+
+**Explorer:** `drive(left, right)`, `spinLeft()`, `spinRight()`, `arcLeft(radius, deg)`, `arcRight(radius, deg)`, `resetDistance()`, `resetHeading()`, `beep(...)`
 
 See the [cheat sheet](extras/CheatSheet.md) for details.
 
