@@ -1,11 +1,8 @@
 #include <Wire.h>
 #include <string.h>
+#include <float.h>
 #include "esp_timer.h"
 #include "driver/gpio.h"
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <Adafruit_NeoPixel.h>
 #include <Preferences.h>
 
@@ -15,20 +12,22 @@
 //
 // This revision switches the BLE protocol to match the new dashboard
 // (SciolyEV_Dashboard_v3.html from the EV202627 project): meters/seconds
-// instead of mm/ms, new commands (START/STOP/ARM/DISARM/GET_CONFIG/
-// CAL_START/CAL_FINISH/CAL/CALIBRATE), a new telemetry format
-// (P/D/T/V/H/G/B/L/R/M/E), and persisted AS5600 ticks-per-meter
-// calibration via NVS (Preferences). Everything else - hardware-
-// confirmed pins, the MPU-6050/AS5600 drivers, WL_SW gating, the
-// distance-based decel ramp - carries over from the earlier revision.
+// instead of mm/ms, a text command set (START/STOP/ARM/DISARM/GET_CONFIG,
+// calibration, KEY:value setters - see handleCommand()), a 10Hz telemetry
+// line (see sendBLEStatus() in BLE.ino), and all tunables persisted via NVS
+// (Preferences). Everything else - hardware-confirmed pins, the
+// MPU-6050/AS5600 drivers, WL_SW gating, the distance-based decel ramp -
+// carries over from the earlier revision.
 //
 // Deliberately NOT ported from the sibling CurveRouteStepper.ino (same
 // dashboard, different firmware, in the EV202627 project): its PD gyro
-// controller (KD term), closed-loop encoder differential trim, dynamic
-// pacing speed boost, and stepper-coil audio tones. Those are a control-
-// algorithm upgrade, not something the dashboard requires - this keeps
-// the simpler, already-proven P-only heading correction and decel ramp
-// from here instead (that firmware doesn't have a decel ramp at all).
+// controller (KD term), dynamic pacing speed boost, and stepper-coil
+// audio tones. Those are a control-algorithm upgrade, not something the
+// dashboard requires - this keeps the simpler, already-proven P-only
+// heading correction and decel ramp from here instead (that firmware
+// doesn't have a decel ramp at all). Steering here is KP heading hold,
+// plus KX cross-track (aims back at the line) and a light KE encoder
+// balance trim between the wheels.
 //
 // PIN MAP - hardware-confirmed against the real board (the original
 // schematic transcription had several of these wrong - EN_A/STEP_A/
@@ -186,25 +185,50 @@ const float PUSH_ACCEL_FRACTION = 0.5;
 const float MIN_DIST_FACTOR = 0.5;
 const float MAX_DIST_FACTOR = 1.5;
 
+// Distances from the dashboard are in meters; a value over 30 can only
+// have been typed in mm, so it's converted.
+float toMeters(float v) {
+  return v > 30.0 ? v / 1000.0 : v;
+}
+
+// KEY:value settings that are just "clamp to a range, save, maybe
+// recalculate the route". handleCommand() applies these and
+// loadPreferences() restores them; settings with their own rules (PAUSE,
+// TOTAL_TIME, MAX_V, CAL) are handled by name instead. Never rename an
+// NVS key - settings saved under the old name would stop loading.
+struct FloatSetting {
+  const char* cmd;  // as in DIST_F:<val>
+  const char* nvsKey;
+  volatile float* var;
+  float minVal, maxVal;
+  bool mmEntry;  // run the value through toMeters()
+  bool recalc;   // the route depends on it
+};
+
+const FloatSetting SETTINGS[] = {
+  { "DIST_F", "dist_fwd_m", &rt_FORWARD_DIST_M, 0.05f, FLT_MAX, true, true },
+  { "DIST_R", "dist_rev_m", &rt_REVERSE_DIST_M, 0.05f, FLT_MAX, true, true },
+  { "TIME_F", "time_fwd_s", &rt_FORWARD_TIME_S, 1.0f, 60.0f, false, true },
+  { "TIME_R", "time_rev_s", &rt_REVERSE_TIME_S, 1.0f, 60.0f, false, true },
+  { "KP", "kp_heading", &rt_KP_HEADING, 0.0f, 150.0f, false, false },
+  { "BIAS_F", "bias_fwd_pct", &rt_FORWARD_BIAS, -50.0f, 50.0f, false, false },
+  { "BIAS_R", "bias_rev_pct", &rt_REVERSE_BIAS, -50.0f, 50.0f, false, false },
+  { "KX", "kx_xtrack", &rt_KX, 0.0f, 200.0f, false, false },
+  { "KP_ENC", "kp_enc", &rt_KP_ENC, 0.0f, 5.0f, false, false },
+  { "BOTTLE", "bottle_m", &rt_BOTTLE_M, 0.0f, 25.0f, true, true },
+  { "CATCH_V", "catch_mps", &rt_CATCH_MPS, 0.05f, 1.0f, false, true },
+  { "DIST_FACTOR", "dist_factor", &rt_DIST_FACTOR, MIN_DIST_FACTOR, MAX_DIST_FACTOR, false, true },
+};
+
 void loadPreferences() {
   prefs.begin("scioly_ev", true);
-  rt_FORWARD_DIST_M = prefs.getFloat("dist_fwd_m", rt_FORWARD_DIST_M);
-  rt_REVERSE_DIST_M = prefs.getFloat("dist_rev_m", rt_REVERSE_DIST_M);
-  rt_FORWARD_TIME_S = prefs.getFloat("time_fwd_s", rt_FORWARD_TIME_S);
-  rt_REVERSE_TIME_S = prefs.getFloat("time_rev_s", rt_REVERSE_TIME_S);
-  rt_KP_HEADING = prefs.getFloat("kp_heading", rt_KP_HEADING);
-  rt_FORWARD_BIAS = prefs.getFloat("bias_fwd_pct", rt_FORWARD_BIAS);
-  rt_REVERSE_BIAS = prefs.getFloat("bias_rev_pct", rt_REVERSE_BIAS);
+  for (const FloatSetting& s : SETTINGS) *s.var = prefs.getFloat(s.nvsKey, *s.var);
+  rt_DIST_FACTOR = constrain(rt_DIST_FACTOR, MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   rt_PAUSE_MS = (unsigned long)prefs.getFloat("pause_ms", (float)rt_PAUSE_MS);
   ticksPerMeter = prefs.getFloat("ticks_per_m", ticksPerMeter);
-  rt_KX = prefs.getFloat("kx_xtrack", rt_KX);
-  rt_KP_ENC = prefs.getFloat("kp_enc", rt_KP_ENC);
-  rt_BOTTLE_M = prefs.getFloat("bottle_m", rt_BOTTLE_M);
   rt_TOTAL_TIME_S = prefs.getFloat("total_s", rt_TOTAL_TIME_S);
   rt_MAX_SPEED = constrain(prefs.getFloat("max_sps", rt_MAX_SPEED),
                            MAX_SPEED_MIN_MPS * STEPS_PER_METER, MAX_SPEED_MAX_MPS * STEPS_PER_METER);
-  rt_CATCH_MPS = prefs.getFloat("catch_mps", rt_CATCH_MPS);
-  rt_DIST_FACTOR = constrain(prefs.getFloat("dist_factor", rt_DIST_FACTOR), MIN_DIST_FACTOR, MAX_DIST_FACTOR);
   prefs.end();
 }
 
@@ -217,9 +241,7 @@ void saveFloatParam(const char* key, float val) {
 void saveCalibration(float newTicksPerMeter) {
   ticksPerMeter = newTicksPerMeter;
   saveFloatParam("ticks_per_m", ticksPerMeter);
-  Serial.print("[NVS] Saved new calibration: ");
-  Serial.print(ticksPerMeter, 2);
-  Serial.println(" ticks/m");
+  Serial.printf("[NVS] Saved new calibration: %.2f ticks/m\r\n", ticksPerMeter);
 }
 
 // Route-derived values (recalculated by recalcRoute())
@@ -273,17 +295,23 @@ float simulateLegS(float distM, float cruise, bool withCatch) {
   return t;
 }
 
-// Cruise speed (st/s) that makes the forward leg, bottle slow-down
-// included, take timeS. Leg time falls as cruise rises, so bisect.
-float solveForwardCruise(float distM, float timeS) {
+// Cruise speed (st/s) that makes simS(cruise) - a simulated time - come
+// out at targetS. Time falls as cruise rises, so bisect. If even
+// rt_MAX_SPEED can't make the time, go as fast as allowed.
+float solveCruise(float targetS, float (*simS)(float)) {
   float lo = MIN_SAFE_SPEED, hi = rt_MAX_SPEED;
-  if (simulateLegS(distM, hi, true) > timeS) return hi;  // can't make the time - go as fast as allowed
+  if (simS(hi) > targetS) return hi;
   for (int i = 0; i < 20; i++) {
     float mid = (lo + hi) / 2.0;
-    if (simulateLegS(distM, mid, true) > timeS) lo = mid;
+    if (simS(mid) > targetS) lo = mid;
     else hi = mid;
   }
   return hi;
+}
+
+// Forward leg time with the bottle slow-down, for solveCruise().
+float simulateForwardCatchS(float cruise) {
+  return simulateLegS(fwdTravelM() * rt_DIST_FACTOR, cruise, true);
 }
 
 // Total-time mode (rt_TOTAL_TIME_S > 0): the whole run - forward leg,
@@ -303,17 +331,10 @@ float simulateRunS(float cruise) {
 }
 
 void applyTotalTime() {
-  float lo = MIN_SAFE_SPEED, hi = rt_MAX_SPEED;
-  if (simulateRunS(hi) <= rt_TOTAL_TIME_S) {
-    for (int i = 0; i < 20; i++) {
-      float mid = (lo + hi) / 2.0;
-      if (simulateRunS(mid) > rt_TOTAL_TIME_S) lo = mid;
-      else hi = mid;
-    }
-  }  // else too short to make even flat out - run at rt_MAX_SPEED
-  FORWARD_SPEED = REVERSE_SPEED = hi;
-  rt_FORWARD_TIME_S = simulateLegS(fwdTravelM() * rt_DIST_FACTOR, hi, bottleCatchActive());
-  rt_REVERSE_TIME_S = simulateLegS(revTravelM() * rt_DIST_FACTOR, hi, false);
+  float cruise = solveCruise(rt_TOTAL_TIME_S, simulateRunS);
+  FORWARD_SPEED = REVERSE_SPEED = cruise;
+  rt_FORWARD_TIME_S = simulateLegS(fwdTravelM() * rt_DIST_FACTOR, cruise, bottleCatchActive());
+  rt_REVERSE_TIME_S = simulateLegS(revTravelM() * rt_DIST_FACTOR, cruise, false);
 }
 
 // Recalculate step caps, speeds, and accel from the current parameters.
@@ -341,44 +362,19 @@ void recalcRoute() {
     // The bottle slow-down costs time the simple formula above doesn't
     // know about - simulate the leg instead and pick a faster cruise.
     if (bottleCatchActive())
-      FORWARD_SPEED = solveForwardCruise(fwdTravelM() * rt_DIST_FACTOR, rt_FORWARD_TIME_S);
+      FORWARD_SPEED = solveCruise(rt_FORWARD_TIME_S, simulateForwardCatchS);
   }
   FORWARD_ACCEL = FORWARD_SPEED / ACCEL_TIME_SEC;
   REVERSE_ACCEL = REVERSE_SPEED / ACCEL_TIME_SEC;
 
-  Serial.print("[ROUTE] Fwd: ");
-  Serial.print(rt_FORWARD_DIST_M, 3);
-  Serial.print("m (travel ");
-  Serial.print(fwdTravelM(), 3);
-  Serial.print("m) / ");
-  Serial.print(rt_FORWARD_TIME_S, 1);
-  Serial.print("s @ ");
-  Serial.print(FORWARD_SPEED, 0);
-  Serial.print("st/s | Rev: ");
-  Serial.print(rt_REVERSE_DIST_M, 3);
-  Serial.print("m (travel ");
-  Serial.print(revTravelM(), 3);
-  Serial.print("m) / ");
-  Serial.print(rt_REVERSE_TIME_S, 1);
-  Serial.print("s @ ");
-  Serial.print(REVERSE_SPEED, 0);
-  Serial.println("st/s");
-  if (rt_TOTAL_TIME_S > 0) {
-    Serial.print("[ROUTE] Total time ");
-    Serial.print(rt_TOTAL_TIME_S, 2);
-    Serial.print("s (fastest possible ");
-    Serial.print(minTotalTimeS, 2);
-    Serial.println("s)");
-  }
-  if (bottleCatchActive()) {
-    Serial.print("[ROUTE] Bottle at ");
-    Serial.print(rt_BOTTLE_M, 2);
-    Serial.print("m (");
-    Serial.print(bottleTravelM(), 3);
-    Serial.print("m ahead of the car), catch at ");
-    Serial.print(rt_CATCH_MPS, 2);
-    Serial.println("m/s");
-  }
+  Serial.printf("[ROUTE] Fwd: %.3fm (travel %.3fm) / %.1fs @ %.0fst/s | Rev: %.3fm (travel %.3fm) / %.1fs @ %.0fst/s\r\n",
+                rt_FORWARD_DIST_M, fwdTravelM(), rt_FORWARD_TIME_S, FORWARD_SPEED,
+                rt_REVERSE_DIST_M, revTravelM(), rt_REVERSE_TIME_S, REVERSE_SPEED);
+  if (rt_TOTAL_TIME_S > 0)
+    Serial.printf("[ROUTE] Total time %.2fs (fastest possible %.2fs)\r\n", rt_TOTAL_TIME_S, minTotalTimeS);
+  if (bottleCatchActive())
+    Serial.printf("[ROUTE] Bottle at %.2fm (%.3fm ahead of the car), catch at %.2fm/s\r\n",
+                  rt_BOTTLE_M, bottleTravelM(), rt_CATCH_MPS);
 }
 
 // ============================================================
@@ -549,7 +545,7 @@ Encoder rightEnc = { &Wire };  // right encoder is physically on bus0 (with the 
 // taking `Encoder&` before the type exists. Declaring them ourselves
 // here (textually after the struct) makes the auto-generator skip these.
 void updateEncoder(Encoder& enc);
-float encoderDistM(const Encoder& enc, bool invert);
+double signedTicks(const Encoder& enc, bool invert);
 
 bool as5600CheckMagnet(TwoWire& bus) {
   bus.beginTransmission(AS5600_ADDR);
@@ -598,9 +594,9 @@ void updateEncoder(Encoder& enc) {
   enc.lastRaw = raw;
 }
 
-float encoderDistM(const Encoder& enc, bool invert) {
-  double ticks = invert ? -enc.totalTicks : enc.totalTicks;
-  return (float)(ticks / ticksPerMeter);
+// Ticks as the dashboard shows them, with the wheel's INVERT flag applied.
+double signedTicks(const Encoder& enc, bool invert) {
+  return invert ? -enc.totalTicks : enc.totalTicks;
 }
 
 // Heading and run state
@@ -615,6 +611,12 @@ double legStartRightTicks = 0;
 // Target (travel m) of the most recent leg, so PAUSE/DONE keep showing that
 // leg's distance against its own target instead of 0. 0 = no leg yet.
 float shownLegTargetM = 0.0;
+
+// Zero both encoders' totals and the leg start, so odometry reads from 0.
+void zeroOdometry() {
+  leftEnc.totalTicks = rightEnc.totalTicks = 0;
+  legStartLeftTicks = legStartRightTicks = 0;
+}
 
 // Factor-corrected distance of the current/last leg, as telemetry shows it.
 float shownLegDistM() {
@@ -689,15 +691,17 @@ const char* const RUN_DONE_FORWARD_ONLY = "Forward complete (forward-only mode)"
 const char* phaseName(RunPhase p);  // see the Encoder prototype note above - same reason
 void reportLegTracking(const char* leg, double diffTicks = 0.0);
 void finishRun(const char* reason, double diffTicks = 0.0);
-void sendBLEStatus(float distM, float targetM, float compLeft = 1.0, float compRight = 1.0);
-void startLogDump();
-void serviceLogDump();
 
 // Live controller telemetry terms for logging & BLE stream
 float liveKpCorr = 0.0;
 float liveEncCorr = 0.0;
 float liveTargetHeading = 0.0;
-float liveRampedSpeed = 0.0;
+
+void clearLiveTerms() {
+  liveKpCorr = 0.0;
+  liveEncCorr = 0.0;
+  liveTargetHeading = 0.0;
+}
 
 // High-resolution Onboard Run Logger (20 Hz in RAM, up to 30s)
 const int MAX_RUN_SAMPLES = 600;
@@ -726,141 +730,34 @@ int runSampleCount = 0;
 unsigned long lastLogSampleMs = 0;
 unsigned long runLogStartMs = 0;
 
-// Non-blocking log streaming state
-bool logDumpInProgress = false;
-int logDumpIndex = -1;
-unsigned long lastLogDumpSendMs = 0;
-
-// ============================================================
-// BLE Setup (ESP32 built-in BLEDevice stack)
-// UUIDs unchanged so the dashboard's connection logic doesn't need to
-// change, only its parsing of the payload.
-// ============================================================
-#define SERVICE_UUID "19B10000-E8F2-537E-4F6C-D104768A1214"
-#define STATUS_CHAR_UUID "19B10001-E8F2-537E-4F6C-D104768A1214"
-#define CMD_CHAR_UUID "19B10002-E8F2-537E-4F6C-D104768A1214"
-
-BLEServer* pServer = nullptr;
-BLECharacteristic* statusChar = nullptr;
-BLECharacteristic* cmdChar = nullptr;
-
-bool wirelessEnabled = false;  // set from WL_SW - see setup()/loop()
-volatile bool bleConnected = false;
-unsigned long lastBLESend = 0;
-
-void sendVehicleConfig() {
-  if (!bleConnected || statusChar == nullptr) return;
-  // Format: CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f MV:%.3f
-  // TT = total time target (0 = off), MT = fastest possible total, MV = top speed (m/s).
-  char buf[256];
-  snprintf(buf, sizeof(buf),
-           "CFG:DF:%.3f DR:%.3f TF:%.2f TR:%.2f KP:%.1f BF:%.1f BR:%.1f P:%.0f C:%.1f KX:%.1f DK:%.4f KE:%.2f BP:%.3f CV:%.2f TT:%.2f MT:%.2f MV:%.3f",
-           rt_FORWARD_DIST_M, rt_REVERSE_DIST_M, rt_FORWARD_TIME_S, rt_REVERSE_TIME_S,
-           rt_KP_HEADING, rt_FORWARD_BIAS, rt_REVERSE_BIAS, (float)rt_PAUSE_MS, ticksPerMeter, rt_KX,
-           rt_DIST_FACTOR, rt_KP_ENC, rt_BOTTLE_M, rt_CATCH_MPS, rt_TOTAL_TIME_S, minTotalTimeS,
-           rt_MAX_SPEED / STEPS_PER_METER);
-  statusChar->setValue(String(buf));
-  statusChar->notify();
+// Append one sample to the run log (no-op once it's full). Speed, the
+// correction terms and target heading come from the live values, which
+// are already 0 whenever the car isn't on a moving leg.
+void logRunSample(uint8_t phaseCode, float distM, float targetM, float trackL, float trackR) {
+  if (runSampleCount >= MAX_RUN_SAMPLES) return;
+  lastLogSampleMs = millis();
+  RunSample& s = runSamples[runSampleCount++];
+  s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
+  s.phase = phaseCode;
+  s.distMm = (int16_t)constrain(distM * 1000.0f, -32000.0f, 32000.0f);
+  s.targetDistMm = (int16_t)constrain(targetM * 1000.0f, -32000.0f, 32000.0f);
+  s.speedCps = (int16_t)constrain((((leftCurrentSpeed + rightCurrentSpeed) / 2.0f) / STEPS_PER_METER) * 100.0f, -3200.0f, 3200.0f);
+  s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
+  s.targetHeadingCdeg = (int16_t)constrain(liveTargetHeading * 100.0f, -32000.0f, 32000.0f);
+  s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
+  s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
+  s.leftTicks = (int32_t)signedTicks(leftEnc, LEFT_ENC_INVERT);
+  s.rightTicks = (int32_t)signedTicks(rightEnc, RIGHT_ENC_INVERT);
+  s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
+  s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
+  s.kpCorrSps = (int16_t)constrain(liveKpCorr, -32000.0f, 32000.0f);
+  s.encCorrSps = (int16_t)constrain(liveEncCorr, -32000.0f, 32000.0f);
+  s.trackLPct = (uint8_t)constrain((int)trackL, 0, 255);
+  s.trackRPct = (uint8_t)constrain((int)trackR, 0, 255);
+  s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
 }
 
-void startLogDump() {
-  if (phase == FORWARD || phase == REVERSE) {
-    if (bleConnected && statusChar != nullptr) {
-      statusChar->setValue(String("STATUS:Cannot dump log during active run"));
-      statusChar->notify();
-    }
-    Serial.println("[LOG] Refused log dump: vehicle actively running");
-    return;
-  }
-  if (runSampleCount == 0) {
-    if (bleConnected && statusChar != nullptr) {
-      statusChar->setValue(String("STATUS:No onboard run data recorded"));
-      statusChar->notify();
-    }
-    Serial.println("[LOG] No onboard run samples to dump");
-    return;
-  }
-
-  // If BLE is not connected, dump directly to Serial for bench testing
-  if (!bleConnected || statusChar == nullptr) {
-    Serial.print("[LOG] Dumping ");
-    Serial.print(runSampleCount);
-    Serial.println(" samples to Serial:");
-    Serial.print("LOG_START:");
-    Serial.println(runSampleCount);
-    char buf[140];
-    for (int i = 0; i < runSampleCount; i++) {
-      const RunSample& s = runSamples[i];
-      snprintf(buf, sizeof(buf),
-               "LOG_D:%d,%u,%u,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%u,%d,%d,%u,%u,%u",
-               i, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
-               s.headingCdeg, s.targetHeadingCdeg, s.gyroRateCdeg, s.crossTrackMm,
-               (long)s.leftTicks, (long)s.rightTicks, s.leftSteps, s.rightSteps,
-               s.kpCorrSps, s.encCorrSps, s.trackLPct, s.trackRPct, s.railMv);
-      Serial.println(buf);
-    }
-    Serial.print("LOG_END:");
-    Serial.println(runSampleCount);
-    return;
-  }
-
-  // Queue non-blocking transmission to be serviced in loop()
-  logDumpInProgress = true;
-  logDumpIndex = -1;
-  lastLogDumpSendMs = 0;
-  Serial.print("[LOG] Queued non-blocking log dump of ");
-  Serial.print(runSampleCount);
-  Serial.println(" samples over BLE...");
-}
-
-void serviceLogDump() {
-  if (!logDumpInProgress) return;
-
-  if (!bleConnected || statusChar == nullptr) {
-    logDumpInProgress = false;
-    Serial.println("[LOG] Aborted log dump: BLE disconnected");
-    return;
-  }
-
-  // Pace transmissions at 25ms per packet (giving BLE stack ample time to flush)
-  if (millis() - lastLogDumpSendMs < 25) return;
-  lastLogDumpSendMs = millis();
-
-  if (logDumpIndex == -1) {
-    char header[64];
-    snprintf(header, sizeof(header), "LOG_START:%d", runSampleCount);
-    statusChar->setValue(String(header));
-    statusChar->notify();
-    logDumpIndex = 0;
-    return;
-  }
-
-  if (logDumpIndex < runSampleCount) {
-    const RunSample& s = runSamples[logDumpIndex];
-    char buf[140];
-    snprintf(buf, sizeof(buf),
-             "LOG_D:%d,%u,%u,%d,%d,%d,%d,%d,%d,%d,%ld,%ld,%u,%u,%d,%d,%u,%u,%u",
-             logDumpIndex, s.elapsedMs, s.phase, s.distMm, s.targetDistMm, s.speedCps,
-             s.headingCdeg, s.targetHeadingCdeg, s.gyroRateCdeg, s.crossTrackMm,
-             (long)s.leftTicks, (long)s.rightTicks, s.leftSteps, s.rightSteps,
-             s.kpCorrSps, s.encCorrSps, s.trackLPct, s.trackRPct, s.railMv);
-    statusChar->setValue(String(buf));
-    statusChar->notify();
-    logDumpIndex++;
-    return;
-  }
-
-  // Finalize stream
-  char endBuf[64];
-  snprintf(endBuf, sizeof(endBuf), "LOG_END:%d", runSampleCount);
-  statusChar->setValue(String(endBuf));
-  statusChar->notify();
-  logDumpInProgress = false;
-  lastBLESend = millis();  // prevent immediate collision with sendBLEStatus
-  Serial.print("[LOG] Completed non-blocking log dump of ");
-  Serial.print(runSampleCount);
-  Serial.println(" samples.");
-}
+// Bluetooth - dashboard link, telemetry, log dump, WL_SW - is in BLE.ino.
 
 // Starts the forward leg - shared by the physical button and the BLE
 // START command. Guarded so it only fires from an idle/finished state.
@@ -882,18 +779,13 @@ void startRunSequence() {
     }
     if (samples >= 25) {
       gyroZ_offset = (float)zSum / (float)samples;
-      Serial.print("[IMU] Start-line gyro offset refreshed: ");
-      Serial.println(gyroZ_offset, 2);
+      Serial.printf("[IMU] Start-line gyro offset refreshed: %.2f\r\n", gyroZ_offset);
     }
   }
 
   headingAngle = 0.0;
   crossTrackM = 0.0;
-  lastLegDistM = 0.0;
-  minTrackLPct = minTrackRPct = 100;
   lastTime = millis();
-  startTime = millis();
-  setDirection(true);
   armMotors(true);
 
   // Reset onboard run logger
@@ -905,20 +797,29 @@ void startRunSequence() {
   // (they used to pile up across runs until a RESET).
   updateEncoder(leftEnc);
   updateEncoder(rightEnc);
-  leftEnc.totalTicks = rightEnc.totalTicks = 0;
-  legStartLeftTicks = legStartRightTicks = 0;
+  zeroOdometry();
   shownLegTargetM = 0.0;
 
-  stallSpeedCap = rt_MAX_SPEED;
-  startLeg(FORWARD_STEP_CAP, FORWARD_ACCEL);
-  beginLegRamp();
-  phase = FORWARD;
-  Serial.println("[RUN] Forward leg starting...");
+  stallSpeedCap = rt_MAX_SPEED;  // the reverse leg keeps whatever the forward leg lowers it to
+  beginLeg(true);
+}
 
-  if (bleConnected && statusChar != nullptr) {
-    statusChar->setValue(String("STATUS:Running forward!"));
-    statusChar->notify();
-  }
+// Start one leg from a standstill: direction, leg-start encoder ticks,
+// per-leg tracking and the stepper ramp. Encoders must be fresh
+// (updateEncoder()) when this is called. crossTrackM deliberately carries
+// over from leg to leg.
+void beginLeg(bool forward) {
+  startTime = millis();
+  setDirection(forward);
+  legStartLeftTicks = leftEnc.totalTicks;
+  legStartRightTicks = rightEnc.totalTicks;
+  lastLegDistM = 0.0;
+  minTrackLPct = minTrackRPct = 100;
+  startLeg(forward ? FORWARD_STEP_CAP : REVERSE_STEP_CAP, forward ? FORWARD_ACCEL : REVERSE_ACCEL);
+  beginLegRamp();
+  phase = forward ? FORWARD : REVERSE;
+  Serial.println(forward ? "[RUN] Forward leg starting..." : "[RUN] Reverse leg starting...");
+  bleSend(forward ? "STATUS:Running forward!" : "STATUS:Running reverse!");
 }
 
 // Reset run state back to idle, armed, ready for another attempt.
@@ -931,23 +832,14 @@ void resetRun() {
   lastTime = millis();
 
   // Zero encoders so odometry displays cleanly from 0 on the dashboard
-  leftEnc.totalTicks = 0;
-  rightEnc.totalTicks = 0;
-  legStartLeftTicks = 0;
-  legStartRightTicks = 0;
+  zeroOdometry();
   shownLegTargetM = 0.0;
-  liveKpCorr = 0.0;
-  liveEncCorr = 0.0;
-  liveTargetHeading = 0.0;
-  liveRampedSpeed = 0.0;
+  clearLiveTerms();
 
   recalcRoute();
 
-  if (bleConnected && statusChar != nullptr) {
-    statusChar->setValue(String("STATUS:Ready - vehicle reset & armed"));
-    statusChar->notify();
-    sendVehicleConfig();
-  }
+  bleSend("STATUS:Ready - vehicle reset & armed");
+  sendVehicleConfig();
 }
 
 // BLE command parser - new protocol to match the dashboard. Also usable
@@ -957,9 +849,7 @@ void handleCommand(const String& cmdIn) {
   cmd.trim();
   if (cmd.length() == 0) return;
 
-  Serial.print("[CMD RX] '");
-  Serial.print(cmd);
-  Serial.println("'");
+  Serial.printf("[CMD RX] '%s'\r\n", cmd.c_str());
 
   String upperCmd = cmd;
   upperCmd.toUpperCase();
@@ -994,41 +884,28 @@ void handleCommand(const String& cmdIn) {
   }
   if (upperCmd == "LOG_CLEAR") {
     runSampleCount = 0;
-    logDumpInProgress = false;
-    if (bleConnected && statusChar != nullptr) {
-      statusChar->setValue(String("STATUS:Onboard log cleared"));
-      statusChar->notify();
-    }
+    cancelLogDump();
+    bleSend("STATUS:Onboard log cleared");
     return;
   }
   if (upperCmd == "CAL_START") {
     // Physical push-roll calibration: disarm so the vehicle can be
     // pushed by hand, and zero both encoders as the reference point.
     armMotors(false);
-    leftEnc.totalTicks = 0;
-    rightEnc.totalTicks = 0;
-    legStartLeftTicks = 0;
-    legStartRightTicks = 0;
-    if (bleConnected && statusChar != nullptr) {
-      statusChar->setValue(String("STATUS:Push calibration active - roll vehicle"));
-      statusChar->notify();
-    }
+    zeroOdometry();
+    bleSend("STATUS:Push calibration active - roll vehicle");
     return;
   }
   if (upperCmd.startsWith("CAL_FINISH:")) {
-    float pushM = cmd.substring(11).toFloat();
-    if (pushM > 30.0) pushM /= 1000.0;  // tolerate mm entry
+    float pushM = toMeters(cmd.substring(11).toFloat());
     double avgTicks = (fabs(leftEnc.totalTicks) + fabs(rightEnc.totalTicks)) / 2.0;
     if (pushM > 0.05 && avgTicks > 50.0) {
       saveCalibration((float)(avgTicks / pushM));
       armMotors(true);
       sendVehicleConfig();
-      if (bleConnected && statusChar != nullptr) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "STATUS:Calibrated: %.1f ticks/m", ticksPerMeter);
-        statusChar->setValue(String(buf));
-        statusChar->notify();
-      }
+      char buf[80];
+      snprintf(buf, sizeof(buf), "STATUS:Calibrated: %.1f ticks/m", ticksPerMeter);
+      bleSend(buf);
     }
     return;
   }
@@ -1036,8 +913,7 @@ void handleCommand(const String& cmdIn) {
     // Adjusts the existing calibration by the ratio between the
     // forward travel distance and what was actually measured with
     // a tape measure after a real run, rather than a fresh push test.
-    float measuredM = cmd.substring(10).toFloat();
-    if (measuredM > 30.0) measuredM /= 1000.0;
+    float measuredM = toMeters(cmd.substring(10).toFloat());
     if (measuredM > 0.05) {
       float ratio = fwdTravelM() / measuredM;
       saveCalibration(ticksPerMeter * ratio);
@@ -1051,22 +927,17 @@ void handleCommand(const String& cmdIn) {
     // forward travel distance (set distance minus the car's length) /
     // tape-measured travel of the last run.
     // Leaves ticksPerMeter alone.
-    float measuredM = cmd.substring(14).toFloat();
-    if (measuredM > 30.0) measuredM /= 1000.0;
+    float measuredM = toMeters(cmd.substring(14).toFloat());
     if (measuredM > 0.05) {
       float newFactor = rt_DIST_FACTOR * fwdTravelM() / measuredM;
       if (newFactor < MIN_DIST_FACTOR || newFactor > MAX_DIST_FACTOR) {
-        if (bleConnected && statusChar != nullptr) {
-          statusChar->setValue(String("STATUS:Distance factor out of range - check the measurement"));
-          statusChar->notify();
-        }
+        bleSend("STATUS:Distance factor out of range - check the measurement");
         return;
       }
       rt_DIST_FACTOR = newFactor;
       saveFloatParam("dist_factor", rt_DIST_FACTOR);
       recalcRoute();
-      Serial.print("[NVS] Distance factor: ");
-      Serial.println(rt_DIST_FACTOR, 4);
+      Serial.printf("[NVS] Distance factor: %.4f\r\n", rt_DIST_FACTOR);
       sendVehicleConfig();
     }
     return;
@@ -1080,134 +951,51 @@ void handleCommand(const String& cmdIn) {
   key.toUpperCase();
   float val = cmd.substring(colon + 1).toFloat();
 
-  if (key == "DIST_F") {
-    if (val > 30.0) val /= 1000.0;
-    rt_FORWARD_DIST_M = max(val, 0.05f);
-    saveFloatParam("dist_fwd_m", rt_FORWARD_DIST_M);
-    recalcRoute();
-  } else if (key == "DIST_R") {
-    if (val > 30.0) val /= 1000.0;
-    rt_REVERSE_DIST_M = max(val, 0.05f);
-    saveFloatParam("dist_rev_m", rt_REVERSE_DIST_M);
-    recalcRoute();
-  } else if (key == "TIME_F" || key == "TIME_R") {
-    // Setting a leg time by hand switches total-time mode off - otherwise
-    // recalcRoute() would just overwrite it.
-    if (rt_TOTAL_TIME_S > 0) {
-      rt_TOTAL_TIME_S = 0;
-      saveFloatParam("total_s", 0);
-    }
-    if (key == "TIME_F") {
-      rt_FORWARD_TIME_S = constrain(val, 1.0f, 60.0f);
-      saveFloatParam("time_fwd_s", rt_FORWARD_TIME_S);
-    } else {
-      rt_REVERSE_TIME_S = constrain(val, 1.0f, 60.0f);
-      saveFloatParam("time_rev_s", rt_REVERSE_TIME_S);
-    }
-    recalcRoute();
-  } else if (key == "TOTAL_TIME") {
+  if (key == "KE") key = "KP_ENC";  // short alias
+
+  // Setting a leg time by hand switches total-time mode off - otherwise
+  // recalcRoute() would just overwrite it.
+  if ((key == "TIME_F" || key == "TIME_R") && rt_TOTAL_TIME_S > 0) {
+    rt_TOTAL_TIME_S = 0;
+    saveFloatParam("total_s", 0);
+  }
+
+  for (const FloatSetting& s : SETTINGS) {
+    if (key != s.cmd) continue;
+    float v = s.mmEntry ? toMeters(val) : val;
+    *s.var = constrain(v, s.minVal, s.maxVal);
+    saveFloatParam(s.nvsKey, *s.var);
+    if (s.recalc) recalcRoute();
+    if (s.var == &rt_KP_ENC) Serial.printf("[NVS] Encoder balance gain (KE): %.3f\r\n", rt_KP_ENC);
+    sendVehicleConfig();
+    return;
+  }
+
+  if (key == "TOTAL_TIME") {
     rt_TOTAL_TIME_S = (val <= 0) ? 0.0f : constrain(val, 1.0f, 120.0f);
     saveFloatParam("total_s", rt_TOTAL_TIME_S);
     recalcRoute();
-    if (rt_TOTAL_TIME_S > 0 && rt_TOTAL_TIME_S < minTotalTimeS && bleConnected && statusChar != nullptr) {
+    if (rt_TOTAL_TIME_S > 0 && rt_TOTAL_TIME_S < minTotalTimeS) {
       char buf[96];
       snprintf(buf, sizeof(buf), "STATUS:Total time too short - fastest possible is %.2f s", minTotalTimeS);
-      statusChar->setValue(String(buf));
-      statusChar->notify();
+      bleSend(buf);
     }
-  } else if (key == "KP") {
-    rt_KP_HEADING = constrain(val, 0.0f, 150.0f);
-    saveFloatParam("kp_heading", rt_KP_HEADING);
-  } else if (key == "BIAS_F") {
-    rt_FORWARD_BIAS = constrain(val, -50.0f, 50.0f);
-    saveFloatParam("bias_fwd_pct", rt_FORWARD_BIAS);
-  } else if (key == "BIAS_R") {
-    rt_REVERSE_BIAS = constrain(val, -50.0f, 50.0f);
-    saveFloatParam("bias_rev_pct", rt_REVERSE_BIAS);
   } else if (key == "PAUSE") {
     rt_PAUSE_MS = (unsigned long)constrain(val, 0.0f, 5000.0f);
     saveFloatParam("pause_ms", (float)rt_PAUSE_MS);
     recalcRoute();  // the pause is part of the total time
-  } else if (key == "KX") {
-    rt_KX = constrain(val, 0.0f, 200.0f);
-    saveFloatParam("kx_xtrack", rt_KX);
-  } else if (key == "KP_ENC" || key == "KE") {
-    rt_KP_ENC = constrain(val, 0.0f, 5.0f);
-    saveFloatParam("kp_enc", rt_KP_ENC);
-    Serial.print("[NVS] Encoder balance gain (KE): ");
-    Serial.println(rt_KP_ENC, 3);
-  } else if (key == "BOTTLE") {
-    if (val > 30.0) val /= 1000.0;  // tolerate mm entry
-    rt_BOTTLE_M = constrain(val, 0.0f, 25.0f);
-    saveFloatParam("bottle_m", rt_BOTTLE_M);
-    recalcRoute();
   } else if (key == "MAX_V") {
     rt_MAX_SPEED = constrain(val, MAX_SPEED_MIN_MPS, MAX_SPEED_MAX_MPS) * STEPS_PER_METER;
     saveFloatParam("max_sps", rt_MAX_SPEED);
     recalcRoute();
-  } else if (key == "CATCH_V") {
-    rt_CATCH_MPS = constrain(val, 0.05f, 1.0f);
-    saveFloatParam("catch_mps", rt_CATCH_MPS);
-    recalcRoute();
-  } else if (key == "DIST_FACTOR") {
-    rt_DIST_FACTOR = constrain(val, MIN_DIST_FACTOR, MAX_DIST_FACTOR);
-    saveFloatParam("dist_factor", rt_DIST_FACTOR);
-    recalcRoute();
   } else if (key == "CAL") {
     if (val > 500.0 && val < 100000.0) saveCalibration(val);
   } else {
-    Serial.print("[CMD] Unknown: ");
-    Serial.println(cmd);
+    Serial.printf("[CMD] Unknown: %s\r\n", cmd.c_str());
     return;
   }
 
   sendVehicleConfig();
-}
-
-class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* server) override {
-    bleConnected = true;
-    Serial.println("[BLE] Client connected");
-    sendVehicleConfig();
-  }
-  void onDisconnect(BLEServer* server) override {
-    bleConnected = false;
-    Serial.println("[BLE] Client disconnected - restarting advertising");
-    BLEDevice::startAdvertising();
-  }
-};
-
-class CmdCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    String value = characteristic->getValue();
-    if (value.length() == 0) return;
-    handleCommand(value);
-  }
-};
-
-void initBLE() {
-  if (pServer != nullptr) return;  // already initialized
-
-  BLEDevice::init("SciolyEV");
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new ServerCallbacks());
-
-  BLEService* service = pServer->createService(SERVICE_UUID);
-
-  statusChar = service->createCharacteristic(
-    STATUS_CHAR_UUID,
-    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  statusChar->addDescriptor(new BLE2902());
-
-  cmdChar = service->createCharacteristic(
-    CMD_CHAR_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  cmdChar->setCallbacks(new CmdCallbacks());
-
-  service->start();
-  BLEDevice::getAdvertising()->addServiceUUID(SERVICE_UUID);
-  BLEDevice::startAdvertising();
-  Serial.println("[BLE] Advertising as 'SciolyEV'");
 }
 
 // Direct I2C helpers (MPU-6050 - flat register map, no bank switching)
@@ -1242,16 +1030,13 @@ float mpuGetGyroZ_dps() {
 
 bool mpuInit() {
   for (int attempt = 1; attempt <= 3; attempt++) {
-    Serial.print("MPU-6050 attempt ");
-    Serial.print(attempt);
-    Serial.println("/3...");
+    Serial.printf("MPU-6050 attempt %d/3...\r\n", attempt);
     Wire.beginTransmission(MPU_ADDR);
     Wire.write(MPU_REG_WHO_AM_I);
     Wire.endTransmission(false);
     Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1);
     byte whoAmI = Wire.available() ? Wire.read() : 0xFF;
-    Serial.print("WHO_AM_I: 0x");
-    Serial.println(whoAmI, HEX);
+    Serial.printf("WHO_AM_I: 0x%X\r\n", whoAmI);
     // 0x68 is the datasheet value; 0x74 shows up on some GY-521 clone
     // boards - a real device on the bus, just a different ID byte. The
     // rest of the register map is the same de facto standard either way.
@@ -1293,8 +1078,7 @@ void mpuCalibrateGyro() {
   }
 
   gyroZ_offset = sum / (float)good;
-  Serial.print("Gyro Z offset: ");
-  Serial.println(gyroZ_offset, 2);
+  Serial.printf("Gyro Z offset: %.2f\r\n", gyroZ_offset);
   if (good < 400) Serial.println("WARNING: Many I2C failures during calibration!");
   else Serial.println("Calibration OK.");
 }
@@ -1319,11 +1103,8 @@ void updateStatusLed() {
     ledState = !ledState;
 
     bool nowLow = readRailVoltage() < LOW_VOLTAGE_THRESHOLD;
-    if (nowLow && !lowVoltage) {
-      Serial.print("WARNING: rail voltage low (");
-      Serial.print(readRailVoltage(), 2);
-      Serial.println(" V) - status LED flashing");
-    }
+    if (nowLow && !lowVoltage)
+      Serial.printf("WARNING: rail voltage low (%.2f V) - status LED flashing\r\n", readRailVoltage());
     lowVoltage = nowLow;
     digitalWrite(STATUS_LED_PIN, lowVoltage ? ledState : LOW);
   }
@@ -1362,37 +1143,6 @@ const char* phaseName(RunPhase p) {
   return "?";
 }
 
-// Telemetry broadcast at 10Hz, sent continuously in every phase
-// (including idle) so the dashboard's live chart and readouts keep
-// moving even before a run starts.
-// Format: P:<phase> D:<m> T:<m> V:<m/s> H:<deg> G:<dps> B:<V> L:<ticks>
-//         R:<ticks> CL:<left mult> CR:<right mult> M:<armed 0/1> E:<leg elapsed ms>
-//         WL:<left track %> WR:<right track %> X:<cross-track mm>
-void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) {
-  if (logDumpInProgress) return;  // Suppress regular telemetry while dumping high-res log
-  if (!bleConnected || statusChar == nullptr) return;
-  if (millis() - lastBLESend < 100) return;
-  lastBLESend = millis();
-
-  float speedMps = ((leftCurrentSpeed + rightCurrentSpeed) / 2.0) / STEPS_PER_METER;
-
-  char buf[250];
-  snprintf(buf, sizeof(buf),
-           "P:%s D:%.3f T:%.3f V:%.2f H:%.1f G:%.1f B:%.2f L:%.0f R:%.0f CL:%.3f CR:%.3f M:%d E:%lu WL:%.0f WR:%.0f X:%.0f KC:%.1f EC:%.1f TH:%.1f SL:%ld SR:%ld",
-           phaseName(phase), distM, targetM, speedMps, headingAngle, currentGyroRate_dps,
-           readRailVoltage(),
-           LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks,
-           RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks,
-           compLeft, compRight,
-           motorsArmed ? 1 : 0,
-           (phase == WAIT_BUTTON) ? 0UL : (phase == DONE) ? finishElapsedMs : (millis() - startTime),
-           trackLPct, trackRPct, crossTrackM * 1000.0,
-           liveKpCorr, liveEncCorr, liveTargetHeading,
-           leftPosition, rightPosition);
-  statusChar->setValue(String(buf));
-  statusChar->notify();
-}
-
 // Leg-end summary: lowest wheel tracking seen during the leg, plus where
 // the car ended up relative to the line and final wheel tick difference.
 void reportLegTracking(const char* leg, double diffTicks) {
@@ -1400,11 +1150,7 @@ void reportLegTracking(const char* leg, double diffTicks) {
   snprintf(buf, sizeof(buf), "STATUS:%s track min L:%.0f%% R:%.0f%% | Δticks %+.0f | offset %+.0fmm | stalls %d",
            leg, minTrackLPct, minTrackRPct, diffTicks, crossTrackM * 1000.0, legStallCount);
   Serial.println(buf + 7);
-  if (bleConnected && statusChar != nullptr) {
-    statusChar->setValue(String(buf));
-    statusChar->notify();
-    delay(20);  // let this notification go out before the next status/stop message
-  }
+  if (bleSend(buf)) delay(20);  // let this notification go out before the next status/stop message
 }
 
 // Stop everything and report. Motors stay armed (holding torque, so the
@@ -1417,46 +1163,19 @@ void finishRun(const char* reason, double diffTicks) {
   lastRunFailed = (strcmp(reason, RUN_DONE_FULL) != 0 && strcmp(reason, RUN_DONE_FORWARD_ONLY) != 0);
   finishElapsedMs = (phase == WAIT_BUTTON) ? 0 : millis() - startTime;
 
-  // Record terminal sample into onboard run logger
-  if (runSampleCount < MAX_RUN_SAMPLES) {
-    RunSample& s = runSamples[runSampleCount++];
-    s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
-    s.phase = 4; // DONE
-    s.distMm = (int16_t)constrain(encoderDistM(leftEnc, LEFT_ENC_INVERT) * 1000.0f / rt_DIST_FACTOR, -32000.0f, 32000.0f);
-    s.targetDistMm = (int16_t)constrain(fwdTravelM() * 1000.0f, -32000.0f, 32000.0f);
-    s.speedCps = 0;
-    s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
-    s.targetHeadingCdeg = 0;
-    s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
-    s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
-    s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
-    s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
-    s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
-    s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
-    s.kpCorrSps = 0;
-    s.encCorrSps = 0;
-    s.trackLPct = (uint8_t)constrain((int)minTrackLPct, 0, 255);
-    s.trackRPct = (uint8_t)constrain((int)minTrackRPct, 0, 255);
-    s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
-  }
+  clearLiveTerms();
 
-  liveKpCorr = 0.0;
-  liveEncCorr = 0.0;
-  liveTargetHeading = 0.0;
-  liveRampedSpeed = 0.0;
+  // Terminal sample: the leg that just ended, same as the DONE telemetry
+  // shows, with the lowest wheel tracking seen on it.
+  bool hadLeg = shownLegTargetM > 0;
+  logRunSample(4 /* DONE */, hadLeg ? shownLegDistM() : 0.0f, hadLeg ? shownLegTargetM : fwdTravelM(),
+               minTrackLPct, minTrackRPct);
 
-  Serial.print("[RUN] Finished: ");
-  Serial.print(reason);
-  Serial.print(" | Final heading: ");
-  Serial.print(headingAngle, 2);
-  Serial.println(" deg");
+  Serial.printf("[RUN] Finished: %s | Final heading: %.2f deg\r\n", reason, headingAngle);
 
-  if (bleConnected && statusChar != nullptr) {
-    char buf[100];
-    snprintf(buf, sizeof(buf), "STOP:%s", reason);
-    statusChar->setValue(String(buf));
-    statusChar->notify();
-  }
+  char buf[100];
+  snprintf(buf, sizeof(buf), "STOP:%s", reason);
+  bleSend(buf);
 
   phase = DONE;
 }
@@ -1530,27 +1249,14 @@ void setup() {
     Serial.println("[4] MPU-6050 FAILED - continuing without heading correction");
   }
 
-  bool leftMagnetOK = as5600CheckMagnet(Wire1);
-  bool rightMagnetOK = as5600CheckMagnet(Wire);
-  Serial.print("Left encoder magnet detected:  ");
-  Serial.println(leftMagnetOK ? "yes" : "NO - check magnet gap/alignment");
-  Serial.print("Right encoder magnet detected: ");
-  Serial.println(rightMagnetOK ? "yes" : "NO - check magnet gap/alignment");
+  const char* noMagnet = "NO - check magnet gap/alignment";
+  Serial.printf("Left encoder magnet detected:  %s\r\n", as5600CheckMagnet(Wire1) ? "yes" : noMagnet);
+  Serial.printf("Right encoder magnet detected: %s\r\n", as5600CheckMagnet(Wire) ? "yes" : noMagnet);
   Serial.println("[5] AS5600 encoders checked");
 
-  Serial.print("Rail voltage: ");
-  Serial.print(readRailVoltage(), 2);
-  Serial.println(" V");
+  Serial.printf("Rail voltage: %.2f V\r\n", readRailVoltage());
 
-  wirelessEnabled = (digitalRead(WL_SW_PIN) == LOW);
-  digitalWrite(WL_LED_PIN, wirelessEnabled ? HIGH : LOW);
-  if (wirelessEnabled) {
-    initBLE();
-    Serial.println("[6] BLE OK - advertising as 'SciolyEV'");
-  } else {
-    Serial.println("[6] WL_SW is OFF - wireless disabled for this run.");
-    Serial.println("    Flip WL_SW on to bring up BLE (checked every loop, no reset needed).");
-  }
+  bleSetup();
   Serial.println("---");
   if (FORWARD_ONLY) Serial.println("FORWARD_ONLY mode: runs stop after the forward leg (no reverse).");
   Serial.println("Press the button, or send START over BLE, to begin.");
@@ -1561,20 +1267,7 @@ void loop() {
   float dt = (now - lastTime) / 1000.0;
   lastTime = now;
 
-  // WL_SW can now be brought up live (checked every loop) rather than
-  // only once at boot - flip it on and BLE starts without a reset.
-  if (!wirelessEnabled && digitalRead(WL_SW_PIN) == LOW) {
-    wirelessEnabled = true;
-    digitalWrite(WL_LED_PIN, HIGH);
-    initBLE();
-  } else if (wirelessEnabled && digitalRead(WL_SW_PIN) != LOW) {
-    // Switched off after boot - can't power down an already-initialized
-    // radio, but stop transmitting/accepting commands as a reminder to
-    // reset the board before a real run if the switch matters right now.
-    wirelessEnabled = false;
-    bleConnected = false;
-    digitalWrite(WL_LED_PIN, LOW);
-  }
+  bleCheckSwitch();
 
   // Gyro integrates continuously (not just during a run) so the
   // dashboard's heading readout is live even while idle; it's zeroed
@@ -1592,8 +1285,7 @@ void loop() {
       static unsigned long lastFailPrint = 0;
       if (millis() - lastFailPrint > 1000) {
         lastFailPrint = millis();
-        Serial.print("IMU read failures last sec: ");
-        Serial.println(failCount);
+        Serial.printf("IMU read failures last sec: %d\r\n", failCount);
         failCount = 0;
       }
     }
@@ -1632,49 +1324,13 @@ void loop() {
       curTargetM = shownLegTargetM;
     }
     if (phase == PAUSE) {
-      liveKpCorr = 0.0;
-      liveEncCorr = 0.0;
-      liveTargetHeading = 0.0;
-      liveRampedSpeed = 0.0;
-      if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
-        lastLogSampleMs = millis();
-        RunSample& s = runSamples[runSampleCount++];
-        s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
-        s.phase = 2; // PAUSE
-        s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
-        s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
-        s.speedCps = 0;
-        s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
-        s.targetHeadingCdeg = 0;
-        s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
-        s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
-        s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
-        s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
-        s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
-        s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
-        s.kpCorrSps = 0;
-        s.encCorrSps = 0;
-        s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
-        s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
-        s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
-      }
+      clearLiveTerms();
+      if (millis() - lastLogSampleMs >= 50)
+        logRunSample(2 /* PAUSE */, curDistM, curTargetM, trackLPct, trackRPct);
       if (now - pauseStartTime >= rt_PAUSE_MS) {
-      startTime = millis();
-      setDirection(false);
-      updateEncoder(leftEnc);
-      updateEncoder(rightEnc);
-      legStartLeftTicks = leftEnc.totalTicks;
-      legStartRightTicks = rightEnc.totalTicks;
-      lastLegDistM = 0.0;  // leg distance restarts from 0; crossTrackM deliberately carries over
-      minTrackLPct = minTrackRPct = 100;
-      startLeg(REVERSE_STEP_CAP, REVERSE_ACCEL);
-      beginLegRamp();  // stallSpeedCap deliberately carries over from the forward leg
-      phase = REVERSE;
-      Serial.println("[RUN] Reverse leg starting...");
-        if (bleConnected) {
-          statusChar->setValue(String("STATUS:Running reverse!"));
-          statusChar->notify();
-        }
+        updateEncoder(leftEnc);
+        updateEncoder(rightEnc);
+        beginLeg(false);
       }
     }
   } else if (phase == FORWARD || phase == REVERSE) {
@@ -1729,11 +1385,7 @@ void loop() {
         snprintf(buf, sizeof(buf), "STATUS:STALL %s%s at %.0f st/s - top speed now %.0f st/s",
                  stalledL ? "L" : "", stalledR ? "R" : "", stallSpeed, stallSpeedCap);
         Serial.println(buf + 7);
-        if (bleConnected && statusChar != nullptr) {
-          statusChar->setValue(String(buf));
-          statusChar->notify();
-          lastBLESend = millis();  // hold off this pass's telemetry so it doesn't overwrite the alert
-        }
+        bleSendAlert(buf);
         snapL = stalledL;
         snapR = stalledR;
       } else {
@@ -1810,30 +1462,9 @@ void loop() {
     liveKpCorr = kpCorrection;
     liveEncCorr = encCorr;
     liveTargetHeading = targetHeading;
-    liveRampedSpeed = rampedSpeed;
 
-    if (millis() - lastLogSampleMs >= 50 && runSampleCount < MAX_RUN_SAMPLES) {
-      lastLogSampleMs = millis();
-      RunSample& s = runSamples[runSampleCount++];
-      s.elapsedMs = (uint16_t)min((unsigned long)65535, millis() - runLogStartMs);
-      s.phase = isForward ? 1 : 3;
-      s.distMm = (int16_t)constrain(curDistM * 1000.0f, -32000.0f, 32000.0f);
-      s.targetDistMm = (int16_t)constrain(curTargetM * 1000.0f, -32000.0f, 32000.0f);
-      s.speedCps = (int16_t)constrain((((leftCurrentSpeed + rightCurrentSpeed) / 2.0f) / STEPS_PER_METER) * 100.0f, -3200.0f, 3200.0f);
-      s.headingCdeg = (int16_t)constrain(headingAngle * 100.0f, -32000.0f, 32000.0f);
-      s.targetHeadingCdeg = (int16_t)constrain(liveTargetHeading * 100.0f, -32000.0f, 32000.0f);
-      s.gyroRateCdeg = (int16_t)constrain(currentGyroRate_dps * 100.0f, -32000.0f, 32000.0f);
-      s.crossTrackMm = (int16_t)constrain(crossTrackM * 1000.0f, -32000.0f, 32000.0f);
-      s.leftTicks = (int32_t)(LEFT_ENC_INVERT ? -leftEnc.totalTicks : leftEnc.totalTicks);
-      s.rightTicks = (int32_t)(RIGHT_ENC_INVERT ? -rightEnc.totalTicks : rightEnc.totalTicks);
-      s.leftSteps = (uint16_t)(leftPosition & 0xFFFF);
-      s.rightSteps = (uint16_t)(rightPosition & 0xFFFF);
-      s.kpCorrSps = (int16_t)constrain(liveKpCorr, -32000.0f, 32000.0f);
-      s.encCorrSps = (int16_t)constrain(liveEncCorr, -32000.0f, 32000.0f);
-      s.trackLPct = (uint8_t)constrain((int)trackLPct, 0, 255);
-      s.trackRPct = (uint8_t)constrain((int)trackRPct, 0, 255);
-      s.railMv = (uint16_t)constrain(readRailVoltage() * 1000.0f, 0.0f, 65535.0f);
-    }
+    if (millis() - lastLogSampleMs >= 50)
+      logRunSample(isForward ? 1 /* FWD */ : 3 /* REV */, curDistM, curTargetM, trackLPct, trackRPct);
 
     // A stalled wheel isn't turning anyway, so drop its command straight
     // to the restart speed - slewing down would leave it buzzing longer.
@@ -1861,34 +1492,10 @@ void loop() {
     static unsigned long lastPrint = 0;
     if (millis() - lastPrint >= 200) {
       lastPrint = millis();
-      Serial.print(phaseName(phase));
-      Serial.print(" Heading:");
-      Serial.print(headingAngle, 1);
-      Serial.print(" Corr:");
-      Serial.print(kpCorrection, 1);
-      Serial.print(" EncCorr:");
-      Serial.print(encCorr, 1);
-      Serial.print(" Δticks:");
-      Serial.print(diffTicks, 0);
-      Serial.print(" XT:");
-      Serial.print(crossTrackM * 1000.0, 0);
-      Serial.print("mm Dist:");
-      Serial.print(avgLegM, 3);
-      Serial.print("m / Target:");
-      Serial.print(targetM, 3);
-      Serial.print("m | trackL:");
-      Serial.print(trackLPct, 0);
-      Serial.print("% trackR:");
-      Serial.print(trackRPct, 0);
-      Serial.print("% (steps ");
-      Serial.print(sL);
-      Serial.print("/");
-      Serial.print(sR);
-      Serial.print(" ticks ");
-      Serial.print(dLeftTicks, 0);
-      Serial.print("/");
-      Serial.print(dRightTicks, 0);
-      Serial.println(")");
+      Serial.printf("%s Heading:%.1f Corr:%.1f EncCorr:%.1f Δticks:%.0f XT:%.0fmm Dist:%.3fm / Target:%.3fm"
+                    " | trackL:%.0f%% trackR:%.0f%% (steps %ld/%ld ticks %.0f/%.0f)\r\n",
+                    phaseName(phase), headingAngle, kpCorrection, encCorr, diffTicks, crossTrackM * 1000.0,
+                    avgLegM, targetM, trackLPct, trackRPct, sL, sR, dLeftTicks, dRightTicks);
     }
 
     // Leg stop conditions - encoder confirmation is primary; the step cap
@@ -1904,10 +1511,7 @@ void loop() {
         phase = PAUSE;
         Serial.println("[RUN] Forward leg complete. Pausing before reverse...");
         reportLegTracking("FWD", diffTicks);
-        if (bleConnected) {
-          statusChar->setValue(String("STATUS:Forward done, pausing"));
-          statusChar->notify();
-        }
+        bleSend("STATUS:Forward done, pausing");
       } else {
         finishRun(RUN_DONE_FULL, diffTicks);
       }
@@ -1918,9 +1522,5 @@ void loop() {
   }
 
   // Service asynchronous onboard log dump if requested, otherwise broadcast continuous telemetry
-  if (logDumpInProgress) {
-    serviceLogDump();
-  } else {
-    sendBLEStatus(curDistM, curTargetM, liveCompLeft, liveCompRight);
-  }
+  bleService(curDistM, curTargetM, liveCompLeft, liveCompRight);
 }
