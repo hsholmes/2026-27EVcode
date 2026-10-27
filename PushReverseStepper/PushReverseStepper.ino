@@ -286,7 +286,9 @@ float simulateLegS(float distM, float cruise, bool withCatch) {
   float aMps2 = accel / STEPS_PER_METER;
   float t = 0, x = 0;
   while (x < distM && t < 120.0) {
-    float v = constrain(accel * t, MIN_SAFE_SPEED, cruise);
+    // Same ramp-up as loop(): from MIN_SAFE_SPEED (rampFloorSpeed at the
+    // start of a leg), not from 0.
+    float v = constrain(MIN_SAFE_SPEED + accel * t, MIN_SAFE_SPEED, cruise);
     v = min(v, max((float)(sqrt(2.0 * aMps2 * (distM - x)) * STEPS_PER_METER), MIN_SAFE_SPEED));
     if (withCatch) v = min(v, catchSpeedLimit(x, accel));
     x += v / STEPS_PER_METER * dt;
@@ -863,7 +865,10 @@ void handleCommand(const String& cmdIn) {
     return;
   }
   if (upperCmd == "STOP") {
-    finishRun("Emergency Stop Triggered");
+    // Only a run in progress can be stopped - otherwise finishRun() would
+    // report an idle/finished car as a failed run.
+    if (phase == FORWARD || phase == PAUSE || phase == REVERSE) finishRun("Emergency Stop Triggered");
+    else bleSend("STATUS:Not running - nothing to stop");
     return;
   }
   if (upperCmd == "ARM") {
@@ -1057,7 +1062,8 @@ bool mpuInit() {
   return false;
 }
 
-void mpuCalibrateGyro() {
+// Returns false if not a single read succeeded - the gyro can't be used.
+bool mpuCalibrateGyro() {
   Serial.println("Calibrating gyro... keep vehicle still!");
   for (int i = 0; i < 200; i++) {
     mpuReadGyroZ();
@@ -1077,10 +1083,15 @@ void mpuCalibrateGyro() {
     delay(5);
   }
 
+  if (good == 0) {
+    Serial.println("Calibration FAILED: no gyro reads succeeded");
+    return false;
+  }
   gyroZ_offset = sum / (float)good;
   Serial.printf("Gyro Z offset: %.2f\r\n", gyroZ_offset);
   if (good < 400) Serial.println("WARNING: Many I2C failures during calibration!");
   else Serial.println("Calibration OK.");
+  return true;
 }
 
 // Rail voltage via the VOLT divider (100k/10k off the boosted 12V rail).
@@ -1243,11 +1254,9 @@ void setup() {
   if (hasImu) {
     Serial.println("Waiting 3000ms for gyro to settle...");
     delay(3000);
-    mpuCalibrateGyro();
-    Serial.println("[4] MPU-6050 OK");
-  } else {
-    Serial.println("[4] MPU-6050 FAILED - continuing without heading correction");
+    hasImu = mpuCalibrateGyro();
   }
+  Serial.println(hasImu ? "[4] MPU-6050 OK" : "[4] MPU-6050 FAILED - continuing without heading correction");
 
   const char* noMagnet = "NO - check magnet gap/alignment";
   Serial.printf("Left encoder magnet detected:  %s\r\n", as5600CheckMagnet(Wire1) ? "yes" : noMagnet);
@@ -1301,6 +1310,7 @@ void loop() {
     sCmd.trim();
     if (sCmd.length() > 0) handleCommand(sCmd);
   }
+  bleProcessCommands();
 
   float curDistM = 0.0;
   float curTargetM = fwdTravelM();

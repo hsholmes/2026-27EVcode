@@ -15,6 +15,8 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 #define SERVICE_UUID "19B10000-E8F2-537E-4F6C-D104768A1214"
 #define STATUS_CHAR_UUID "19B10001-E8F2-537E-4F6C-D104768A1214"
@@ -24,9 +26,17 @@ BLEServer* pServer = nullptr;
 BLECharacteristic* statusChar = nullptr;
 BLECharacteristic* cmdChar = nullptr;
 
-bool wirelessEnabled = false;  // set from WL_SW - see bleSetup()/bleCheckSwitch()
+volatile bool wirelessEnabled = false;  // set from WL_SW - see bleSetup()/bleCheckSwitch()
 volatile bool bleConnected = false;
+volatile bool configPending = false;    // a client just connected - send it the config from loop()
 unsigned long lastBLESend = 0;
+
+// Commands written by the dashboard arrive on the BLE task. They're queued
+// here and run from loop() by bleProcessCommands(), so a command never
+// changes run state partway through a loop pass.
+const int CMD_QUEUE_LEN = 16;
+const int CMD_MAX_LEN = 96;
+QueueHandle_t cmdQueue = nullptr;
 
 // Non-blocking log streaming state
 bool logDumpInProgress = false;
@@ -177,9 +187,14 @@ void sendBLEStatus(float distM, float targetM, float compLeft, float compRight) 
   bleSend(buf);
 }
 
-// Once per loop pass: the next log-dump packet if a dump is running,
-// otherwise the regular telemetry line.
+// Once per loop pass: the config for a client that just connected, then
+// the next log-dump packet if a dump is running, otherwise the regular
+// telemetry line.
 void bleService(float distM, float targetM, float compLeft, float compRight) {
+  if (configPending) {
+    configPending = false;
+    sendVehicleConfig();
+  }
   if (logDumpInProgress) {
     serviceLogDump();
   } else {
@@ -189,12 +204,18 @@ void bleService(float distM, float targetM, float compLeft, float compRight) {
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
+    if (!wirelessEnabled) {
+      // WL_SW is off - refuse the connection.
+      server->disconnect(server->getConnId());
+      return;
+    }
     bleConnected = true;
     Serial.println("[BLE] Client connected");
-    sendVehicleConfig();
+    configPending = true;
   }
   void onDisconnect(BLEServer* server) override {
     bleConnected = false;
+    if (!wirelessEnabled) return;  // switched off - stay quiet
     Serial.println("[BLE] Client disconnected - restarting advertising");
     BLEDevice::startAdvertising();
   }
@@ -202,15 +223,26 @@ class ServerCallbacks : public BLEServerCallbacks {
 
 class CmdCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic) override {
+    if (!wirelessEnabled || cmdQueue == nullptr) return;
     String value = characteristic->getValue();
     if (value.length() == 0) return;
-    handleCommand(value);
+    char buf[CMD_MAX_LEN] = {};
+    strncpy(buf, value.c_str(), CMD_MAX_LEN - 1);
+    if (xQueueSend(cmdQueue, buf, 0) != pdTRUE) Serial.println("[BLE] Command queue full - dropped");
   }
 };
+
+// Run the commands queued by CmdCallbacks. Called from loop().
+void bleProcessCommands() {
+  if (cmdQueue == nullptr) return;
+  char buf[CMD_MAX_LEN];
+  while (xQueueReceive(cmdQueue, buf, 0) == pdTRUE) handleCommand(String(buf));
+}
 
 void initBLE() {
   if (pServer != nullptr) return;  // already initialized
 
+  cmdQueue = xQueueCreate(CMD_QUEUE_LEN, CMD_MAX_LEN);
   BLEDevice::init("SciolyEV");
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -246,19 +278,25 @@ void bleSetup() {
   }
 }
 
-// WL_SW can now be brought up live (checked every loop) rather than
-// only once at boot - flip it on and BLE starts without a reset.
+// WL_SW is checked every loop, not just at boot - flip it on and BLE
+// starts without a reset.
 void bleCheckSwitch() {
   if (!wirelessEnabled && digitalRead(WL_SW_PIN) == LOW) {
     wirelessEnabled = true;
     digitalWrite(WL_LED_PIN, HIGH);
-    initBLE();
+    if (pServer == nullptr) initBLE();
+    else BLEDevice::startAdvertising();  // back on after being switched off
   } else if (wirelessEnabled && digitalRead(WL_SW_PIN) != LOW) {
-    // Switched off after boot - can't power down an already-initialized
-    // radio, but stop transmitting/accepting commands as a reminder to
-    // reset the board before a real run if the switch matters right now.
+    // Switched off after boot. The radio can't be powered down once it's
+    // up, but stop advertising, drop any client, and ignore commands
+    // (onConnect/onWrite check wirelessEnabled) until it's switched back on.
     wirelessEnabled = false;
     bleConnected = false;
     digitalWrite(WL_LED_PIN, LOW);
+    if (pServer != nullptr) {
+      BLEDevice::stopAdvertising();
+      if (pServer->getConnectedCount() > 0) pServer->disconnect(pServer->getConnId());
+      if (cmdQueue != nullptr) xQueueReset(cmdQueue);
+    }
   }
 }
