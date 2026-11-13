@@ -1258,11 +1258,11 @@
             </div>
           </div>
 
-          <!-- KE Encoder Differential Balance -->
+          <!-- KE Encoder Trim: makes up ticks a wheel lost vs its commanded steps -->
           <div class="param-field">
             <div class="param-label-row">
               <span class="param-title">KE Encoder Trim</span>
-              <span class="param-sub">st/s per tick diff</span>
+              <span class="param-sub">st/s per lost tick</span>
             </div>
             <div class="input-row">
               <input type="number" id="inpKe" value="0.20" step="0.05" min="0" max="5.0">
@@ -2802,7 +2802,7 @@ Run Outcome: ${session.stopReason}
 >
 > **Your Task:**
 > 1. **Trajectory & Drift Analysis:** Diagnose whether lateral drift or yaw angle was caused by launch jerk, tire slip, weight imbalance, gyro thermal bias, or steering bias.
-> 2. **Control Loop Tuning:** Evaluate whether \`KP_HEADING\` (${p.kpHeading}) and \`KX\` (${p.kxCrossTrack}) are responsive, under-damped, or oscillating, and whether encoder differential trim \`KE\` (${p.keEncTrim}) balanced the wheels effectively without fighting gyro turns.
+> 2. **Control Loop Tuning:** Evaluate whether \`KP_HEADING\` (${p.kpHeading}) and \`KX\` (${p.kxCrossTrack}) are responsive, under-damped, or oscillating, and whether the encoder trim \`KE\` (${p.keEncTrim}) behaved. It only makes up ticks a wheel lost against its own commanded steps (skipped steps, hub slip), so it should sit near zero except right after a wheel lags; a left/right tick difference left by gyro steering is expected and is not corrected.
 > 3. **Pacing & Deceleration:** Check if the distance-based ramp-down reached the Target Point accurately and recommend specific adjustments to \`DIST_FACTOR\` (${p.distFactor}), \`TIME_F\` / \`TIME_R\`, or \`MAX_V\`.
 > 4. **Concrete Actionable Recommendations:** Provide exact, numbered parameter changes to enter into the dashboard for the next run.
 
@@ -2819,7 +2819,7 @@ Run Outcome: ${session.stopReason}
 | Total Run Target Time | ${p.totalTime.toFixed(2)} | s | Whole-run solver target (0 = legs set separately) |
 | Heading Gain (KP) | ${p.kpHeading.toFixed(1)} | st/s/° | Gyro proportional steering gain |
 | Cross-Track Gain (KX) | ${p.kxCrossTrack.toFixed(1)} | °/m | Sideways error correction gain |
-| Encoder Balance Gain (KE) | ${p.keEncTrim.toFixed(2)} | st/s/tick | Differential wheel tick balance trim |
+| Encoder Trim Gain (KE) | ${p.keEncTrim.toFixed(2)} | st/s/tick | Makes up ticks a wheel lost vs its commanded steps |
 | Forward Bias (BIAS_F) | ${p.biasFwd.toFixed(1)} | st/s | Feedforward steering bias (+ steers right) |
 | Reverse Bias (BIAS_R) | ${p.biasRev.toFixed(1)} | st/s | Feedforward steering bias (+ steers right) |
 | Pause Duration | ${p.pauseMs} | ms | Pause time between forward and reverse |

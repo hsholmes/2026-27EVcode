@@ -27,7 +27,7 @@
 // heading correction and decel ramp from here instead (that firmware
 // doesn't have a decel ramp at all). Steering here is KP heading hold,
 // plus KX cross-track (aims back at the line) and a light KE encoder
-// balance trim between the wheels.
+// trim that makes up ticks a wheel lost against its commanded steps.
 //
 // PIN MAP - hardware-confirmed against the real board (the original
 // schematic transcription had several of these wrong - EN_A/STEP_A/
@@ -97,7 +97,7 @@ const float ACCEL_TIME_SEC = 2.0;
 const float MM_PER_REV = PI * WHEEL_DIAMETER_MM;
 const float STEPS_PER_METER = (STEPS_PER_REV * MICROSTEP) / (MM_PER_REV / 1000.0);
 const float DEFAULT_TICKS_PER_METER = AS5600_TICKS_PER_REV / (MM_PER_REV / 1000.0);
-const float CAR_LENGTH_M = 0.205;
+const float CAR_LENGTH_M = 0.208;
 
 // Step count safety margin: the timer ISR is capped at this multiple of
 // the nominal (distance/speed derived) step count. Actual leg completion
@@ -108,7 +108,7 @@ const float STEP_SAFETY_MARGIN = 1.3;
 // Forward-only mode for calibrating and tuning distance: the run ends
 // after the forward leg (no pause, no reverse). Set false to restore the
 // full push-reverse run.
-const bool FORWARD_ONLY = true;
+const bool FORWARD_ONLY = false;
 const float MIN_SAFE_SPEED = 80.0;    // steps/sec floor, avoids near-zero/negative speeds on a bad param
 // Top cruise speed (steps/sec), set from the dashboard with MAX_V:<m/s>
 // and saved in NVS. Everything speed-related - leg speeds, the total-time
@@ -152,10 +152,11 @@ volatile float rt_KX = 50.0;
 const float MAX_XT_HEADING_DEG = 5.0;  // cap on how hard it aims back at the line
 float ticksPerMeter = DEFAULT_TICKS_PER_METER;
 
-// Encoder differential balance trim: steps/sec of speed trim per tick of
-// difference between left and right wheel encoder travel. A light push
-// (default 0.2 st/s per tick) balances wheel slip/drag (~100-1000 ticks)
-// without fighting gyro turns. Set with KP_ENC:<val> or KE:<val>.
+// Encoder trim: makes up ticks a wheel lost against the steps it was sent
+// (skipped steps, hub/coupler slip), in steps/sec of speed trim per tick
+// still owed. It compares each wheel with its own commanded steps, not the
+// two wheels with each other, so a turn the gyro steered on purpose is
+// never "corrected" back. Set with KP_ENC:<val> or KE:<val>.
 volatile float rt_KP_ENC = 0.2;
 const float MAX_ENC_CORR = 150.0;  // cap on encoder speed trim (st/s)
 
@@ -631,6 +632,7 @@ bool hasImu = false;
 unsigned long finishElapsedMs = 0;  // leg elapsed time frozen at finishRun(), for telemetry in DONE
 float crossTrackM = 0.0;    // sideways offset from the line, + = left of it; carried across both legs
 float lastLegDistM = 0.0;   // previous loop's leg distance, to get per-loop travel
+float encMadeUpTicks = 0.0; // ticks the encoder trim has added to the left wheel over the right, this leg
 
 // Wheel tracking: encoder rotation / commanded steps, in %, per wheel.
 // Live values go out in telemetry; the lowest seen each leg is reported
@@ -816,6 +818,7 @@ void beginLeg(bool forward) {
   legStartLeftTicks = leftEnc.totalTicks;
   legStartRightTicks = rightEnc.totalTicks;
   lastLegDistM = 0.0;
+  encMadeUpTicks = 0.0;
   minTrackLPct = minTrackRPct = 100;
   startLeg(forward ? FORWARD_STEP_CAP : REVERSE_STEP_CAP, forward ? FORWARD_ACCEL : REVERSE_ACCEL);
   beginLegRamp();
@@ -971,7 +974,7 @@ void handleCommand(const String& cmdIn) {
     *s.var = constrain(v, s.minVal, s.maxVal);
     saveFloatParam(s.nvsKey, *s.var);
     if (s.recalc) recalcRoute();
-    if (s.var == &rt_KP_ENC) Serial.printf("[NVS] Encoder balance gain (KE): %.3f\r\n", rt_KP_ENC);
+    if (s.var == &rt_KP_ENC) Serial.printf("[NVS] Encoder trim gain (KE): %.3f\r\n", rt_KP_ENC);
     sendVehicleConfig();
     return;
   }
@@ -1444,27 +1447,30 @@ void loop() {
     float headingError = headingAngle - targetHeading;
     float kpCorrection = hasImu ? dirSign * rt_KP_HEADING * headingError : 0.0;
 
-    // Encoder differential balance trim:
-    // dLeftTicks and dRightTicks are positive magnitudes of travel on this leg.
-    // diffTicks > 0 means left wheel has turned more ticks than right wheel.
-    // To balance them, left must slow down (-) and right must speed up (+).
+    // Encoder trim - see rt_KP_ENC. Each wheel's lag is how many ticks it
+    // has turned short of the steps it was sent. Steering (gyro, bias)
+    // sends the two wheels different step counts on purpose, and that
+    // shows up in both steps and ticks, so it cancels out here - only
+    // ticks a wheel actually lost are left for the trim to make up.
+    // diffTicks (raw left - right travel) is kept for the reports only.
     double diffTicks = dLeftTicks - dRightTicks;
-    float encCorr = -rt_KP_ENC * (float)diffTicks;
-    encCorr = constrain(encCorr, -MAX_ENC_CORR, MAX_ENC_CORR);
+    long sL = leftPosition, sR = rightPosition;
+    double lagL = sL * ticksPerStep - dLeftTicks;
+    double lagR = sR * ticksPerStep - dRightTicks;
+    // + = the left wheel is still owed ticks, so it speeds up.
+    float owedTicks = (float)(lagL - lagR) - encMadeUpTicks;
+    float encCorr = constrain(rt_KP_ENC * owedTicks, -MAX_ENC_CORR, MAX_ENC_CORR);
 
-    // If gyro is actively steering the car to correct heading error, do not
-    // let encoder balance trim fight the turn required to realign the vehicle.
-    if (hasImu && fabs(headingError) > 0.20f) {
-      if ((kpCorrection > 0.0f && encCorr < 0.0f) || (kpCorrection < 0.0f && encCorr > 0.0f)) {
-        encCorr *= 0.10f; // Attenuate opposing trim by 90%
-      }
-    }
+    float steer = kpCorrection + dirSign * bias;
+    float minSpd = rampedSpeed * 0.8, maxSpd = rampedSpeed * 1.2;
+    leftTargetSpeed = constrain(rampedSpeed + steer + encCorr, minSpd, maxSpd);
+    rightTargetSpeed = constrain(rampedSpeed - steer - encCorr, minSpd, maxSpd);
 
-    float leftSpd = rampedSpeed + kpCorrection + dirSign * bias + encCorr;
-    float rightSpd = rampedSpeed - kpCorrection - dirSign * bias - encCorr;
-
-    leftTargetSpeed = constrain(leftSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
-    rightTargetSpeed = constrain(rightSpd, rampedSpeed * 0.8, rampedSpeed * 1.2);
+    // Count the ticks the trim itself adds (what the speed difference is,
+    // less what steering alone would have made it), so it stops once the
+    // lost ticks are made up instead of pushing against the gyro forever.
+    float steerOnlyDiff = constrain(rampedSpeed + steer, minSpd, maxSpd) - constrain(rampedSpeed - steer, minSpd, maxSpd);
+    encMadeUpTicks += ((leftTargetSpeed - rightTargetSpeed) - steerOnlyDiff) * dt * ticksPerStep;
 
     liveCompLeft = (rampedSpeed > 1.0) ? (leftTargetSpeed / rampedSpeed) : 1.0;
     liveCompRight = (rampedSpeed > 1.0) ? (rightTargetSpeed / rampedSpeed) : 1.0;
@@ -1489,7 +1495,6 @@ void loop() {
     // is skipping steps or slipping between motor and wheel (hub/coupler).
     // Both read a little under 100% because steps are sampled slightly
     // after the encoders - compare left vs right, not against 100%.
-    long sL = leftPosition, sR = rightPosition;
     if (sL >= TRACK_MIN_STEPS) {
       trackLPct = dLeftTicks / (sL * ticksPerStep) * 100.0;
       minTrackLPct = min(minTrackLPct, trackLPct);
