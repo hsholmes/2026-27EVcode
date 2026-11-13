@@ -2437,6 +2437,7 @@ function startNewRunSession(source = 'live') {
 function recordLiveSample(data) {
   const sample = {
     timeMs: parseInt(data.E, 10) || 0,
+    rxMs: performance.now(),  // receive time, to stitch leg timers into one run clock
     phase: data.P || currentPhase,
     distM: currentDistM,
     targetM: currentTargetM,
@@ -2466,6 +2467,27 @@ function recordLiveSample(data) {
   }
 }
 
+// Live telemetry's E field is the current leg's elapsed time: it keeps
+// counting through PAUSE, then restarts at 0 when the reverse leg begins
+// (onboard logs are already run-relative, so they never restart). Stitch a
+// run-relative clock onto each sample as runMs, bridging a restart with the
+// time between the two samples' arrival. Returns when the reverse leg began
+// (run ms), or null if the run never reversed.
+function stitchRunClock(samples) {
+  let offset = 0, restarted = false, revStartMs = null;
+  samples.forEach((s, i) => {
+    const prev = i > 0 ? samples[i - 1] : null;
+    if (prev && s.timeMs + 50 < prev.timeMs) {
+      const gap = (s.rxMs != null && prev.rxMs != null) ? s.rxMs - prev.rxMs : 0;
+      offset = prev.runMs + gap - s.timeMs;
+      restarted = true;
+    }
+    s.runMs = s.timeMs + offset;
+    if (revStartMs === null && s.phase === 'REV') revStartMs = restarted ? s.runMs - s.timeMs : s.runMs;
+  });
+  return revStartMs;
+}
+
 function finalizeRunSession(reason = 'Completed') {
   if (!currentRunSession || currentRunSession.samples.length === 0) return;
   currentRunSession.active = false;
@@ -2476,7 +2498,20 @@ function finalizeRunSession(reason = 'Completed') {
 
   // Compute statistical summary
   const lastSample = samples[samples.length - 1];
-  const totalDurationS = (lastSample.timeMs / 1000.0) || 0.0;
+  const revStartMs = stitchRunClock(samples);
+  // The run ended about when this was called (STOP/DONE arrives as the car
+  // stops), which can be up to one telemetry interval after the last sample.
+  let endRunMs = lastSample.runMs;
+  if (lastSample.rxMs != null) {
+    const sinceLast = performance.now() - lastSample.rxMs;
+    if (sinceLast > 0 && sinceLast < 500) endRunMs += sinceLast;
+  }
+  const totalDurationS = (endRunMs / 1000.0) || 0.0;
+  const reversed = revStartMs !== null;
+  const fwdLegS = reversed ? Math.max(revStartMs - p.pauseMs, 0) / 1000.0 : totalDurationS;
+  const revLegS = reversed ? Math.max(endRunMs - revStartMs, 0) / 1000.0 : 0.0;
+  const targetTimeS = p.totalTime > 0 ? p.totalTime
+    : reversed ? p.timeFwd + p.pauseMs / 1000.0 + p.timeRev : p.timeFwd;
   const finalDistM = lastSample.distM || 0.0;
   const finalTargetM = lastSample.targetM || (p.distFwd - p.carLengthM);
   const distErrorMm = (finalDistM - finalTargetM) * 1000.0;
@@ -2486,7 +2521,10 @@ function finalizeRunSession(reason = 'Completed') {
   let maxGyroCorr = 0, sumGyroCorr = 0;
   let maxEncTrim = 0, sumEncTrim = 0;
   let minTrackL = 100, minTrackR = 100;
-  let minVolt = 99, restVolt = samples[0].batteryV || 12.0;
+  // 12 V boost rail: track where it was lowest (speed/phase) - it can read
+  // lowest with the car stopped, so "sag under load" isn't assumed.
+  let minVolt = 99, maxVolt = 0, minVoltSpeed = 0, minVoltPhase = '';
+  const startVolt = samples[0].batteryV || 0;
 
   samples.forEach(s => {
     if (s.headingDeg > maxHeading) maxHeading = s.headingDeg;
@@ -2506,16 +2544,24 @@ function finalizeRunSession(reason = 'Completed') {
     if (s.trackLPct > 0 && s.trackLPct < minTrackL) minTrackL = s.trackLPct;
     if (s.trackRPct > 0 && s.trackRPct < minTrackR) minTrackR = s.trackRPct;
 
-    if (s.batteryV > 0 && s.batteryV < minVolt) minVolt = s.batteryV;
+    if (s.batteryV > 0 && s.batteryV < minVolt) {
+      minVolt = s.batteryV;
+      minVoltSpeed = s.speedMps || 0;
+      minVoltPhase = s.phase || '';
+    }
+    if (s.batteryV > maxVolt) maxVolt = s.batteryV;
   });
 
   const rmsHeading = Math.sqrt(sumHeadingSq / samples.length);
   const avgGyroCorr = sumGyroCorr / samples.length;
   const avgEncTrim = sumEncTrim / samples.length;
-  const voltSag = restVolt - (minVolt === 99 ? restVolt : minVolt);
 
   currentRunSession.summary = {
     durationS: totalDurationS,
+    fwdLegS: fwdLegS,
+    revLegS: revLegS,
+    reversed: reversed,
+    targetTimeS: targetTimeS,
     finalDistM: finalDistM,
     finalTargetM: finalTargetM,
     distErrorMm: distErrorMm,
@@ -2532,9 +2578,11 @@ function finalizeRunSession(reason = 'Completed') {
     minTrackLPct: minTrackL === 100 && lastSample.trackLPct > 0 ? lastSample.trackLPct : minTrackL,
     minTrackRPct: minTrackR === 100 && lastSample.trackRPct > 0 ? lastSample.trackRPct : minTrackR,
     finalDeltaTicks: lastSample.deltaTicks,
-    restVolt: restVolt,
-    minVolt: minVolt === 99 ? restVolt : minVolt,
-    voltSag: voltSag,
+    startVolt: startVolt,
+    minVolt: minVolt === 99 ? startVolt : minVolt,
+    maxVolt: maxVolt,
+    minVoltSpeedMps: minVoltSpeed,
+    minVoltPhase: minVoltPhase,
     sampleCount: samples.length
   };
 
@@ -2569,8 +2617,9 @@ function updateDiagnosticsUI(session) {
   distErrEl.style.color = Math.abs(s.distErrorMm) < 15 ? 'var(--status-ready)' : 'var(--status-warn)';
 
   document.getElementById('diagTimeVal').textContent = `${s.durationS.toFixed(2)} s`;
-  const timeTgt = p.totalTime > 0 ? p.totalTime : p.timeFwd;
-  document.getElementById('diagTimeTarget').textContent = `Target: ${timeTgt.toFixed(2)} s (Δ ${(s.durationS - timeTgt).toFixed(2)} s)`;
+  const timeTgt = s.targetTimeS;
+  const legs = s.reversed ? ` · F ${s.fwdLegS.toFixed(2)} / R ${s.revLegS.toFixed(2)} s` : '';
+  document.getElementById('diagTimeTarget').textContent = `Target: ${timeTgt.toFixed(2)} s (Δ ${(s.durationS - timeTgt).toFixed(2)} s)${legs}`;
 
   const hSign = s.finalHeadingDeg >= 0 ? '+' : '';
   document.getElementById('diagHeadingVal').textContent = `${hSign}${s.finalHeadingDeg.toFixed(1)}° / ${s.maxHeadingDeg.toFixed(1)}°`;
@@ -2585,7 +2634,7 @@ function updateDiagnosticsUI(session) {
 
   document.getElementById('diagTrackingVal').textContent = `L: ${s.minTrackLPct.toFixed(0)}% / R: ${s.minTrackRPct.toFixed(0)}%`;
   const dtSign = s.finalDeltaTicks >= 0 ? '+' : '';
-  document.getElementById('diagDeltaTicks').textContent = `Δticks: ${dtSign}${s.finalDeltaTicks} · Sag: -${s.voltSag.toFixed(2)}V`;
+  document.getElementById('diagDeltaTicks').textContent = `Δticks: ${dtSign}${s.finalDeltaTicks} · Rail min: ${s.minVolt.toFixed(2)}V`;
 
   // Rule-based diagnostic suggestions
   generateHeuristicAdvice(session);
@@ -2619,9 +2668,12 @@ function generateHeuristicAdvice(session) {
     adviceList.push(`• <b>Traction / Slip Warning:</b> Asymmetric wheel tracking (L: ${s.minTrackLPct.toFixed(0)}%, R: ${s.minTrackRPct.toFixed(0)}%). The lower wheel is experiencing slip or skipped steps. Check tire traction, coupler tightness, or shift battery weight toward the slipping side.`);
   }
 
-  // Voltage sag
-  if (s.voltSag > 1.2) {
-    adviceList.push(`• <b>Battery Rail Sag:</b> Voltage sagged by ${s.voltSag.toFixed(2)} V under acceleration (dropped to ${s.minVolt.toFixed(2)} V). Consider reducing acceleration or charging NiMH cells.`);
+  // Rail voltage (firmware LOW_VOLTAGE_THRESHOLD is 11.0 V on the 12 V boost rail)
+  if (s.minVolt > 0 && s.minVolt < 11.0) {
+    const slow = s.minVoltSpeedMps < 0.1;
+    adviceList.push(`• <b>Low Rail Voltage:</b> The 12 V rail dropped to ${s.minVolt.toFixed(2)} V (${s.minVoltPhase || 'run'}, ${s.minVoltSpeedMps.toFixed(2)} m/s; highest ${s.maxVolt.toFixed(2)} V). ${slow
+      ? 'It was lowest with the car stopped or barely moving, when the steppers draw the most current - check whether the boost converter holds 12 V with the motors armed and the car still.'
+      : 'It was lowest while moving - check the battery charge and boost converter under load.'}`);
   }
 
   document.getElementById('adviceContent').innerHTML = adviceList.join('<br>');
@@ -2780,7 +2832,10 @@ Run Outcome: ${session.stopReason}
 ---
 
 ## 2. Key Performance Metrics
-- **Total Run Elapsed Time:** ${s.durationS.toFixed(2)} s (vs target ${(p.totalTime > 0 ? p.totalTime : p.timeFwd).toFixed(2)} s)
+- **Total Run Elapsed Time:** ${s.durationS.toFixed(2)} s (vs target ${s.targetTimeS.toFixed(2)} s)${s.reversed ? `
+  - Forward Leg: ${s.fwdLegS.toFixed(2)} s (target ${p.timeFwd.toFixed(2)} s)
+  - Pause: ${(p.pauseMs / 1000.0).toFixed(2)} s
+  - Reverse Leg: ${s.revLegS.toFixed(2)} s (target ${p.timeRev.toFixed(2)} s)` : ''}
 - **Stopping Distance Accuracy:** Command target ${s.finalTargetM.toFixed(3)} m vs Realized ${s.finalDistM.toFixed(3)} m (Error: ${s.distErrorMm >= 0 ? '+' : ''}${s.distErrorMm.toFixed(1)} mm)
 - **Heading Stability:**
   - Final Stopping Yaw: ${s.finalHeadingDeg >= 0 ? '+' : ''}${s.finalHeadingDeg.toFixed(2)}°
@@ -2795,9 +2850,10 @@ Run Outcome: ${session.stopReason}
 - **Traction & Stepper Health:**
   - Lowest Wheel Tracking %: Left ${s.minTrackLPct.toFixed(0)}% vs Right ${s.minTrackRPct.toFixed(0)}%
   - Final Encoder Tick Disparity: Δ ${s.finalDeltaTicks >= 0 ? '+' : ''}${s.finalDeltaTicks} ticks
-- **Power System (Rail Voltage Sag):**
-  - Rest Voltage: ${s.restVolt.toFixed(2)} V
-  - Minimum Voltage Under Load: ${s.minVolt.toFixed(2)} V (Sag: ${s.voltSag.toFixed(2)} V)
+- **Power System (12 V Boost Rail):**
+  - At Launch: ${s.startVolt.toFixed(2)} V
+  - Lowest: ${s.minVolt.toFixed(2)} V (during ${s.minVoltPhase || 'run'} at ${s.minVoltSpeedMps.toFixed(2)} m/s)
+  - Highest: ${s.maxVolt.toFixed(2)} V
 
 ---
 
@@ -2822,7 +2878,7 @@ Run Outcome: ${session.stopReason}
       const trkR = Number(pt.trackRPct ?? 100);
       const batt = Number(pt.batteryV ?? 12.0);
 
-      md += `| ${(pt.timeMs / 1000.0).toFixed(2)} | ${pt.phase || ''} | ${dist.toFixed(3)} | ${spd.toFixed(2)} | ${(head >= 0 ? '+' : '')}${head.toFixed(1)} | ${(tgtHead >= 0 ? '+' : '')}${tgtHead.toFixed(1)} | ${(gRate >= 0 ? '+' : '')}${gRate.toFixed(1)} | ${xt.toFixed(0)} | ${pt.leftTicks ?? 0} | ${pt.rightTicks ?? 0} | ${pt.deltaTicks ?? 0} | ${pt.leftSteps ?? 0} | ${pt.rightSteps ?? 0} | ${(kpCorr >= 0 ? '+' : '')}${kpCorr.toFixed(1)} | ${(eTrim >= 0 ? '+' : '')}${eTrim.toFixed(1)} | ${trkL.toFixed(0)}% | ${trkR.toFixed(0)}% | ${batt.toFixed(2)} |\n`;
+      md += `| ${((pt.runMs ?? pt.timeMs) / 1000.0).toFixed(2)} | ${pt.phase || ''} | ${dist.toFixed(3)} | ${spd.toFixed(2)} | ${(head >= 0 ? '+' : '')}${head.toFixed(1)} | ${(tgtHead >= 0 ? '+' : '')}${tgtHead.toFixed(1)} | ${(gRate >= 0 ? '+' : '')}${gRate.toFixed(1)} | ${xt.toFixed(0)} | ${pt.leftTicks ?? 0} | ${pt.rightTicks ?? 0} | ${pt.deltaTicks ?? 0} | ${pt.leftSteps ?? 0} | ${pt.rightSteps ?? 0} | ${(kpCorr >= 0 ? '+' : '')}${kpCorr.toFixed(1)} | ${(eTrim >= 0 ? '+' : '')}${eTrim.toFixed(1)} | ${trkL.toFixed(0)}% | ${trkR.toFixed(0)}% | ${batt.toFixed(2)} |\n`;
     }
   });
 
@@ -2885,7 +2941,7 @@ function downloadRunCSV() {
     const trkR = Number(s.trackRPct ?? 100);
     const batt = Number(s.batteryV ?? 12.0);
 
-    csv += `${((s.timeMs || 0) / 1000.0).toFixed(3)},${s.phase || ''},${dist.toFixed(4)},${tgtDist.toFixed(4)},${spd.toFixed(3)},${head.toFixed(2)},${tgtHead.toFixed(2)},${gRate.toFixed(2)},${xt.toFixed(1)},${s.leftTicks ?? 0},${s.rightTicks ?? 0},${s.deltaTicks ?? 0},${s.leftSteps ?? 0},${s.rightSteps ?? 0},${kpCorr.toFixed(2)},${eTrim.toFixed(2)},${cL.toFixed(3)},${cR.toFixed(3)},${trkL.toFixed(1)},${trkR.toFixed(1)},${batt.toFixed(2)}\n`;
+    csv += `${((s.runMs ?? s.timeMs ?? 0) / 1000.0).toFixed(3)},${s.phase || ''},${dist.toFixed(4)},${tgtDist.toFixed(4)},${spd.toFixed(3)},${head.toFixed(2)},${tgtHead.toFixed(2)},${gRate.toFixed(2)},${xt.toFixed(1)},${s.leftTicks ?? 0},${s.rightTicks ?? 0},${s.deltaTicks ?? 0},${s.leftSteps ?? 0},${s.rightSteps ?? 0},${kpCorr.toFixed(2)},${eTrim.toFixed(2)},${cL.toFixed(3)},${cR.toFixed(3)},${trkL.toFixed(1)},${trkR.toFixed(1)},${batt.toFixed(2)}\n`;
   });
 
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
